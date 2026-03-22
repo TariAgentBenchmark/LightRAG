@@ -152,6 +152,11 @@ observability = [
     "langfuse>=3.8.1",
 ]
 
+hf-tokenizer = [
+    # Optional Hugging Face tokenizer support for token counting/chunk sizing
+    "transformers>=4.46.0,<5.0.0",
+]
+
 [project.scripts]
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"

@@ -119,6 +119,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Timeout in seconds (useful when using slow AI). Use None for infinite timeout",
     )
+    parser.add_argument(
+        "--hf-tokenizer-model",
+        type=str,
+        default=get_env_value("HF_TOKENIZER_MODEL", None),
+        help="Optional Hugging Face tokenizer model id or local path used for token counting",
+    )
 
     # RAG configuration
     parser.add_argument(

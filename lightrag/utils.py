@@ -1327,6 +1327,59 @@ class TiktokenTokenizer(Tokenizer):
             raise ValueError(f"Invalid model_name: {model_name}.")
 
 
+class _HuggingFaceTokenizerAdapter:
+    """Adapter to present a Hugging Face tokenizer with the TokenizerInterface."""
+
+    def __init__(self, tokenizer: Any):
+        self._tokenizer = tokenizer
+
+    def encode(self, content: str) -> List[int]:
+        return self._tokenizer.encode(content, add_special_tokens=False)
+
+    def decode(self, tokens: List[int]) -> str:
+        return self._tokenizer.decode(
+            tokens,
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+
+
+class HuggingFaceTokenizer(Tokenizer):
+    """
+    A Tokenizer implementation using Hugging Face tokenizers via transformers.
+    """
+
+    def __init__(self, model_name: str):
+        """
+        Initializes the HuggingFaceTokenizer with a specified model name.
+
+        Args:
+            model_name: Hugging Face tokenizer model id or local path.
+
+        Raises:
+            ImportError: If transformers is not installed.
+            ValueError: If the model tokenizer cannot be loaded.
+        """
+        try:
+            from transformers import AutoTokenizer
+        except ImportError:
+            raise ImportError(
+                "transformers is not installed. Please install it with "
+                "`pip install transformers` to use Hugging Face tokenizer support."
+            )
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            super().__init__(
+                model_name=model_name,
+                tokenizer=_HuggingFaceTokenizerAdapter(tokenizer),
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to load Hugging Face tokenizer for model '{model_name}': {exc}"
+            ) from exc
+
+
 def pack_user_ass_to_openai_messages(*args: str):
     roles = ["user", "assistant"]
     return [

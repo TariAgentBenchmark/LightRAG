@@ -5,6 +5,7 @@ from pathlib import Path
 import asyncio
 import json
 import json_repair
+import re
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
@@ -160,6 +161,243 @@ def chunking_by_token_size(
                 }
             )
     return results
+
+
+_STRUCTURE_HEADING_RE = re.compile(
+    r"^\s*("
+    r"第[一二三四五六七八九十百零〇\d]+[章节篇讲回部分]"
+    r"|[一二三四五六七八九十百零〇]+[、.．]"
+    r"|\d+[、.．)]"
+    r"|[（(][一二三四五六七八九十百零〇\d]+[）)]"
+    r"|问[:：]"
+    r"|答[:：]"
+    r"|Q[:：]"
+    r"|A[:：]"
+    r"|【[^】]+】"
+    r")"
+)
+
+
+def _token_window_split(
+    tokenizer: Tokenizer,
+    text: str,
+    chunk_overlap_token_size: int,
+    chunk_token_size: int,
+) -> list[str]:
+    tokens = tokenizer.encode(text)
+    if not tokens:
+        return []
+
+    step = max(1, chunk_token_size - chunk_overlap_token_size)
+    return [
+        tokenizer.decode(tokens[start : start + chunk_token_size]).strip()
+        for start in range(0, len(tokens), step)
+        if tokenizer.decode(tokens[start : start + chunk_token_size]).strip()
+    ]
+
+
+def _split_by_sentence_punctuation(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"(?<=[。！？!?；;])", text) if part.strip()]
+
+
+def _split_by_clause_punctuation(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"(?<=[：:])", text) if part.strip()]
+
+
+def _split_by_commas(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"(?<=[，,])", text) if part.strip()]
+
+
+def _split_oversized_structured_text(
+    tokenizer: Tokenizer,
+    text: str,
+    chunk_overlap_token_size: int,
+    chunk_token_size: int,
+    splitter_index: int = 0,
+) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+
+    if len(tokenizer.encode(text)) <= chunk_token_size:
+        return [text]
+
+    splitters: list[tuple[str, callable]] = [
+        ("\n\n", lambda value: [part.strip() for part in value.split("\n\n") if part.strip()]),
+        ("\n", lambda value: [part.strip() for part in value.split("\n") if part.strip()]),
+        ("", _split_by_sentence_punctuation),
+        ("", _split_by_clause_punctuation),
+        ("", _split_by_commas),
+    ]
+
+    for current_index in range(splitter_index, len(splitters)):
+        joiner, splitter = splitters[current_index]
+        parts = splitter(text)
+        if len(parts) <= 1:
+            continue
+
+        chunks: list[str] = []
+        current_parts: list[str] = []
+
+        for part in parts:
+            if len(tokenizer.encode(part)) > chunk_token_size:
+                if current_parts:
+                    merged = joiner.join(current_parts).strip()
+                    if merged:
+                        chunks.append(merged)
+                    current_parts = []
+
+                chunks.extend(
+                    _split_oversized_structured_text(
+                        tokenizer,
+                        part,
+                        chunk_overlap_token_size,
+                        chunk_token_size,
+                        current_index + 1,
+                    )
+                )
+                continue
+
+            candidate = joiner.join([*current_parts, part]).strip() if current_parts else part
+            if current_parts and len(tokenizer.encode(candidate)) > chunk_token_size:
+                merged = joiner.join(current_parts).strip()
+                if merged:
+                    chunks.append(merged)
+                current_parts = [part]
+            else:
+                current_parts.append(part)
+
+        if current_parts:
+            merged = joiner.join(current_parts).strip()
+            if merged:
+                chunks.append(merged)
+
+        if chunks and all(len(tokenizer.encode(chunk)) <= chunk_token_size for chunk in chunks):
+            return chunks
+
+    return _token_window_split(
+        tokenizer, text, chunk_overlap_token_size, chunk_token_size
+    )
+
+
+def _extract_structural_blocks(content: str) -> list[dict[str, str]]:
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+
+    blocks: list[dict[str, str]] = []
+    table_lines: list[str] = []
+
+    def flush_table():
+        nonlocal table_lines
+        if table_lines:
+            blocks.append({"kind": "table", "text": "\n".join(table_lines).strip()})
+            table_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        if not stripped:
+            flush_table()
+            continue
+
+        if "\t" in line:
+            table_lines.append(stripped)
+            continue
+
+        flush_table()
+
+        if _STRUCTURE_HEADING_RE.match(stripped):
+            blocks.append({"kind": "heading", "text": stripped})
+        else:
+            blocks.append({"kind": "paragraph", "text": stripped})
+
+    flush_table()
+    return blocks
+
+
+def chunking_by_structure_priority(
+    tokenizer: Tokenizer,
+    content: str,
+    split_by_character: str | None = None,
+    split_by_character_only: bool = False,
+    chunk_overlap_token_size: int = 100,
+    chunk_token_size: int = 1200,
+) -> list[dict[str, Any]]:
+    """Chunk text by document structure first, punctuation second, tokens last.
+
+    Strategy:
+    1. Respect explicit caller-provided split_by_character behavior.
+    2. Otherwise detect structural blocks such as headings, paragraphs, and tables.
+    3. Pack adjacent blocks while preserving section boundaries.
+    4. For oversized blocks, split by blank lines/newlines/sentence punctuation.
+    5. Fall back to token window splitting only when structure-aware splitting fails.
+    """
+    if split_by_character:
+        return chunking_by_token_size(
+            tokenizer,
+            content,
+            split_by_character,
+            split_by_character_only,
+            chunk_overlap_token_size,
+            chunk_token_size,
+        )
+
+    blocks = _extract_structural_blocks(content)
+    if not blocks:
+        return []
+
+    chunks: list[dict[str, Any]] = []
+    current_parts: list[str] = []
+
+    def flush_current():
+        nonlocal current_parts
+        if not current_parts:
+            return
+        merged = "\n\n".join(current_parts).strip()
+        if merged:
+            chunks.append(
+                {
+                    "tokens": len(tokenizer.encode(merged)),
+                    "content": merged,
+                    "chunk_order_index": len(chunks),
+                }
+            )
+        current_parts = []
+
+    def append_piece(piece: str):
+        nonlocal current_parts
+        candidate = "\n\n".join([*current_parts, piece]).strip() if current_parts else piece
+        if current_parts and len(tokenizer.encode(candidate)) > chunk_token_size:
+            flush_current()
+        current_parts.append(piece)
+
+    for block in blocks:
+        block_text = block["text"].strip()
+        if not block_text:
+            continue
+
+        if block["kind"] in {"heading", "table"} and current_parts:
+            flush_current()
+
+        block_pieces = (
+            [block_text]
+            if len(tokenizer.encode(block_text)) <= chunk_token_size
+            else _split_oversized_structured_text(
+                tokenizer,
+                block_text,
+                chunk_overlap_token_size,
+                chunk_token_size,
+            )
+        )
+
+        for piece in block_pieces:
+            append_piece(piece)
+
+        if block["kind"] == "table":
+            flush_current()
+
+    flush_current()
+    return chunks
 
 
 async def _handle_entity_relation_summary(

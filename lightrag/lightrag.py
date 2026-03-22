@@ -87,6 +87,7 @@ from lightrag.base import (
 )
 from lightrag.namespace import NameSpace
 from lightrag.operate import (
+    chunking_by_structure_priority,
     chunking_by_token_size,
     extract_entities,
     merge_nodes_and_edges,
@@ -98,6 +99,7 @@ from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import (
     Tokenizer,
     TiktokenTokenizer,
+    HuggingFaceTokenizer,
     EmbeddingFunc,
     always_get_an_event_loop,
     compute_mdhash_id,
@@ -268,6 +270,11 @@ class LightRAG:
     tiktoken_model_name: str = field(default="gpt-4o-mini")
     """Model name used for tokenization when chunking text with tiktoken. Defaults to `gpt-4o-mini`."""
 
+    hf_tokenizer_name: str | None = field(
+        default_factory=lambda: os.getenv("HF_TOKENIZER_MODEL", None)
+    )
+    """Optional Hugging Face tokenizer model id or local path. When set, it overrides tiktoken for token counting."""
+
     chunking_func: Callable[
         [
             Tokenizer,
@@ -278,7 +285,7 @@ class LightRAG:
             int,
         ],
         Union[List[Dict[str, Any]], Awaitable[List[Dict[str, Any]]]],
-    ] = field(default_factory=lambda: chunking_by_token_size)
+    ] = field(default_factory=lambda: chunking_by_structure_priority)
     """
     Custom chunking function for splitting text into chunks before processing.
 
@@ -300,7 +307,7 @@ class LightRAG:
         - `content` (str): The text content of the chunk.
         - `chunk_order_index` (int): Zero-based index indicating the chunk's order in the document.
 
-    Defaults to `chunking_by_token_size` if not specified.
+    Defaults to `chunking_by_structure_priority` if not specified.
     """
 
     # Embedding
@@ -525,7 +532,9 @@ class LightRAG:
         # Init Tokenizer
         # Post-initialization hook to handle backward compatabile tokenizer initialization based on provided parameters
         if self.tokenizer is None:
-            if self.tiktoken_model_name:
+            if self.hf_tokenizer_name:
+                self.tokenizer = HuggingFaceTokenizer(self.hf_tokenizer_name)
+            elif self.tiktoken_model_name:
                 self.tokenizer = TiktokenTokenizer(self.tiktoken_model_name)
             else:
                 self.tokenizer = TiktokenTokenizer()
