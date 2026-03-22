@@ -152,6 +152,10 @@ class ReferenceItem(BaseModel):
         default=None,
         description="List of chunk contents from this file (only present when include_chunk_content=True)",
     )
+    entity_terms: Optional[List[str]] = Field(
+        default=None,
+        description="Entity terms associated with this reference (optional, may include entity names and related graph nodes)",
+    )
 
 
 class QueryResponse(BaseModel):
@@ -178,7 +182,7 @@ class QueryDataResponse(BaseModel):
 class StreamChunkResponse(BaseModel):
     """Response model for streaming chunks in NDJSON format"""
 
-    references: Optional[List[Dict[str, str]]] = Field(
+    references: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         description="Reference list (only in first chunk when include_references=True)",
     )
@@ -192,6 +196,54 @@ class StreamChunkResponse(BaseModel):
 
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     combined_auth = get_combined_auth_dependency(api_key)
+
+    def enrich_references(
+        references: List[Dict[str, Any]],
+        data: Dict[str, Any],
+        include_chunk_content: bool,
+    ) -> List[Dict[str, Any]]:
+        chunks = data.get("chunks", [])
+        entities = data.get("entities", [])
+        relationships = data.get("relationships", [])
+
+        ref_id_to_content: Dict[str, List[str]] = {}
+        for chunk in chunks:
+            ref_id = chunk.get("reference_id", "")
+            content = chunk.get("content", "")
+            if ref_id and content:
+                ref_id_to_content.setdefault(ref_id, []).append(content)
+
+        ref_id_to_entity_terms: Dict[str, List[str]] = {}
+
+        def add_entity_term(ref_id: str, term: str):
+            if not ref_id or not term:
+                return
+            cleaned = str(term).strip()
+            if not cleaned:
+                return
+            ref_id_to_entity_terms.setdefault(ref_id, [])
+            if cleaned not in ref_id_to_entity_terms[ref_id]:
+                ref_id_to_entity_terms[ref_id].append(cleaned)
+
+        for entity in entities:
+            add_entity_term(entity.get("reference_id", ""), entity.get("entity_name", ""))
+
+        for relationship in relationships:
+            ref_id = relationship.get("reference_id", "")
+            add_entity_term(ref_id, relationship.get("src_id", ""))
+            add_entity_term(ref_id, relationship.get("tgt_id", ""))
+
+        enriched_references = []
+        for ref in references:
+            ref_copy = ref.copy()
+            ref_id = ref.get("reference_id", "")
+            if include_chunk_content and ref_id in ref_id_to_content:
+                ref_copy["content"] = ref_id_to_content[ref_id]
+            if ref_id in ref_id_to_entity_terms:
+                ref_copy["entity_terms"] = ref_id_to_entity_terms[ref_id]
+            enriched_references.append(ref_copy)
+
+        return enriched_references
 
     @router.post(
         "/query",
@@ -421,28 +473,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             if not response_content:
                 response_content = "No relevant context found for the query."
 
-            # Enrich references with chunk content if requested
-            if request.include_references and request.include_chunk_content:
-                chunks = data.get("chunks", [])
-                # Create a mapping from reference_id to chunk content
-                ref_id_to_content = {}
-                for chunk in chunks:
-                    ref_id = chunk.get("reference_id", "")
-                    content = chunk.get("content", "")
-                    if ref_id and content:
-                        # Collect chunk content; join later to avoid quadratic string concatenation
-                        ref_id_to_content.setdefault(ref_id, []).append(content)
-
-                # Add content to references
-                enriched_references = []
-                for ref in references:
-                    ref_copy = ref.copy()
-                    ref_id = ref.get("reference_id", "")
-                    if ref_id in ref_id_to_content:
-                        # Keep content as a list of chunks (one file may have multiple chunks)
-                        ref_copy["content"] = ref_id_to_content[ref_id]
-                    enriched_references.append(ref_copy)
-                references = enriched_references
+            if request.include_references:
+                references = enrich_references(
+                    references, data, request.include_chunk_content
+                )
 
             # Return response with or without references based on request
             if request.include_references:
@@ -674,29 +708,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 references = result.get("data", {}).get("references", [])
                 llm_response = result.get("llm_response", {})
 
-                # Enrich references with chunk content if requested
-                if request.include_references and request.include_chunk_content:
+                if request.include_references:
                     data = result.get("data", {})
-                    chunks = data.get("chunks", [])
-                    # Create a mapping from reference_id to chunk content
-                    ref_id_to_content = {}
-                    for chunk in chunks:
-                        ref_id = chunk.get("reference_id", "")
-                        content = chunk.get("content", "")
-                        if ref_id and content:
-                            # Collect chunk content
-                            ref_id_to_content.setdefault(ref_id, []).append(content)
-
-                    # Add content to references
-                    enriched_references = []
-                    for ref in references:
-                        ref_copy = ref.copy()
-                        ref_id = ref.get("reference_id", "")
-                        if ref_id in ref_id_to_content:
-                            # Keep content as a list of chunks (one file may have multiple chunks)
-                            ref_copy["content"] = ref_id_to_content[ref_id]
-                        enriched_references.append(ref_copy)
-                    references = enriched_references
+                    references = enrich_references(
+                        references, data, request.include_chunk_content
+                    )
 
                 if llm_response.get("is_streaming"):
                     # Streaming mode: send references first, then stream response chunks

@@ -238,6 +238,8 @@ Consider the conversation history if provided to maintain conversational flow an
   - Scrutinize both `Knowledge Graph Data` and `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
+  - Every factual statement in the main body MUST include inline numeric citations in Markdown format, such as `[1]` or `[2][3]`. Place the citations immediately after the supported sentence or clause.
+  - Never cite using plain document titles alone in the main body. Do not write forms like "According to Document X" without the numeric citation markers.
   - Generate a references section at the end of the response. Each reference document must directly support the facts presented in the response.
   - Do not generate anything after the reference section.
 
@@ -249,8 +251,14 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST be in the same language as the user query.
   - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
+  - Inline citations in the main body MUST use only the exact bracketed numeric forms `[n]` or `[n][m]`. Do not use superscripts, footnotes, parentheses, or prose-only references instead.
 
-4. References Section Format:
+4. Inline Citation Example:
+```
+道教修炼强调先修心性，再谈功法运用[1][2]。
+```
+
+5. References Section Format:
   - The References section should be under heading: `### References`
   - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
   - The Document Title in the citation must retain its original language.
@@ -258,7 +266,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - Provide maximum of 5 most relevant citations.
   - Do not generate footnotes section or any comment, summary, or explanation after the references.
 
-5. Reference Section Example:
+6. Reference Section Example:
 ```
 ### References
 
@@ -267,7 +275,7 @@ Consider the conversation history if provided to maintain conversational flow an
 - [3] Document Title Three
 ```
 
-6. Additional Instructions: {user_prompt}
+7. Additional Instructions: {user_prompt}
 
 
 ---Context---
@@ -292,6 +300,8 @@ Consider the conversation history if provided to maintain conversational flow an
   - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
+  - Every factual statement in the main body MUST include inline numeric citations in Markdown format, such as `[1]` or `[2][3]`. Place the citations immediately after the supported sentence or clause.
+  - Never cite using plain document titles alone in the main body. Do not write forms like "According to Document X" without the numeric citation markers.
   - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.
   - Do not generate anything after the reference section.
 
@@ -303,8 +313,14 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST be in the same language as the user query.
   - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
+  - Inline citations in the main body MUST use only the exact bracketed numeric forms `[n]` or `[n][m]`. Do not use superscripts, footnotes, parentheses, or prose-only references instead.
 
-4. References Section Format:
+4. Inline Citation Example:
+```
+道教修炼强调先修心性，再谈功法运用[1][2]。
+```
+
+5. References Section Format:
   - The References section should be under heading: `### References`
   - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
   - The Document Title in the citation must retain its original language.
@@ -312,7 +328,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - Provide maximum of 5 most relevant citations.
   - Do not generate footnotes section or any comment, summary, or explanation after the references.
 
-5. Reference Section Example:
+6. Reference Section Example:
 ```
 ### References
 
@@ -321,7 +337,7 @@ Consider the conversation history if provided to maintain conversational flow an
 - [3] Document Title Three
 ```
 
-6. Additional Instructions: {user_prompt}
+7. Additional Instructions: {user_prompt}
 
 
 ---Context---

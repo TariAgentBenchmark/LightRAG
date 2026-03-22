@@ -4,6 +4,7 @@ export type ReferenceItem = {
   reference_id: string
   file_path: string
   content?: string[]
+  entity_terms?: string[]
 }
 
 export type ChatRole = 'user' | 'assistant'

@@ -67,10 +67,6 @@ button {
   overflow: hidden;
 }
 
-.app-shell.with-reference-panel {
-  grid-template-columns: 280px minmax(0, 1fr) 320px;
-}
-
 .mist {
   position: fixed;
   border-radius: 999px;
@@ -96,15 +92,13 @@ button {
 }
 
 .left-rail,
-.reference-panel,
 .chat-stage {
   position: relative;
   z-index: 1;
   min-height: 0;
 }
 
-.left-rail,
-.reference-panel {
+.left-rail {
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -458,6 +452,15 @@ button {
   margin-bottom: 0;
 }
 
+.answer-disclaimer {
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid rgba(41, 71, 63, 0.1);
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.7;
+}
+
 .message-list {
   padding-left: 1.3rem;
 }
@@ -570,43 +573,24 @@ button {
   color: var(--vermilion);
 }
 
-.reference-panel {
-  justify-content: flex-start;
-  gap: 16px;
-  height: 100%;
-}
-
-.reference-header {
+.entity-terms {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 
-.reference-close {
-  flex: none;
-  padding: 0.45rem 0.85rem;
-  border: 1px solid var(--line);
+.entity-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.9rem;
+  padding: 0 10px;
+  border: 1px solid rgba(65, 96, 87, 0.14);
   border-radius: 999px;
   color: var(--accent);
-  background: rgba(255, 252, 246, 0.72);
-}
-
-.reference-close:hover {
-  border-color: var(--line-strong);
-  background: rgba(255, 255, 255, 0.88);
-}
-
-.reference-card {
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 24px;
-  background: rgba(255, 252, 246, 0.86);
-}
-
-.reference-card h4 {
-  margin: 8px 0 6px;
-  font-family: "Iowan Old Style", "Songti SC", "STSong", serif;
+  background: rgba(222, 232, 225, 0.72);
+  font-size: 0.8rem;
+  line-height: 1;
 }
 
 .reference-snippets {
@@ -635,6 +619,14 @@ button {
 
 .reference-snippets blockquote p {
   margin: 0;
+}
+
+.entity-highlight {
+  padding: 0 0.16em;
+  border-radius: 0.25rem;
+  color: inherit;
+  background: rgba(201, 166, 92, 0.26);
+  box-shadow: inset 0 -1px 0 rgba(156, 109, 42, 0.18);
 }
 
 .reference-empty {
@@ -741,15 +733,6 @@ button {
     overflow: visible;
   }
 
-  .app-shell.with-reference-panel {
-    grid-template-columns: 260px minmax(0, 1fr);
-  }
-
-  .reference-panel {
-    grid-column: 1 / -1;
-    height: auto;
-  }
-
   .chat-stage {
     height: calc(100vh - 40px);
   }
@@ -765,7 +748,6 @@ button {
   }
 
   .left-rail,
-  .reference-panel,
   .chat-stage {
     border-radius: 24px;
   }
@@ -800,8 +782,7 @@ button {
   }
 
   .chat-stage,
-  .left-rail,
-  .reference-panel {
+  .left-rail {
     height: auto;
   }
 

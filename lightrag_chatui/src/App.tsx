@@ -55,6 +55,9 @@ const summarizeQuestion = (text: string) => {
 const stripKnownFileExtensions = (text: string) =>
   text.replace(/\s*\.[A-Za-z0-9]{1,10}\b/g, '')
 
+const ANSWER_DISCLAIMER =
+  '以上AI解答仅作参考。最终要以熊老师的本人的回答为准。'
+
 const buildConversationHistory = (messages: ChatMessage[], historyTurns: number) => {
   const eligible = messages
     .filter((message) => !message.isStreaming && !message.error)
@@ -115,6 +118,44 @@ const normalizeSnippet = (snippet: string) => {
 const snippetParagraphs = (snippet?: string) => {
   const paragraphs = normalizeSnippet(snippet ?? '')
   return paragraphs.length > 0 ? paragraphs : ['当前引用未包含 chunk 内容。']
+}
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const normalizeEntityTerms = (terms?: string[]) =>
+  Array.from(
+    new Set(
+      (terms ?? [])
+        .map((term) => term.trim())
+        .filter((term) => term.length >= 2)
+        .sort((left, right) => right.length - left.length)
+    )
+  )
+
+const highlightEntityTerms = (text: string, entityTerms?: string[]) => {
+  const terms = normalizeEntityTerms(entityTerms)
+  if (!text || terms.length === 0) {
+    return text
+  }
+
+  const pattern = new RegExp(`(${terms.map((term) => escapeRegExp(term)).join('|')})`, 'giu')
+  const matcher = new Set(terms.map((term) => term.toLocaleLowerCase('zh-CN')))
+
+  return text.split(pattern).map((part, index) => {
+    if (!part) {
+      return null
+    }
+
+    if (matcher.has(part.toLocaleLowerCase('zh-CN'))) {
+      return (
+        <mark key={`${part}-${index}`} className="entity-highlight">
+          {part}
+        </mark>
+      )
+    }
+
+    return <span key={`${part}-${index}`}>{part}</span>
+  })
 }
 
 type CitationRefProps = {
@@ -213,6 +254,12 @@ const MessageCard = ({
     [message.id, message.references, onHoverReferenceEnd, onHoverReferenceStart, onSelectReference]
   )
 
+  const shouldShowDisclaimer =
+    message.role === 'assistant' &&
+    !message.isStreaming &&
+    !message.error &&
+    displayContent.trim().length > 0
+
   return (
     <article className={`message ${message.role === 'user' ? 'user' : 'assistant'}`}>
       <div className="message-meta">
@@ -226,13 +273,18 @@ const MessageCard = ({
       </div>
       <div className="message-body">
         {message.role === 'assistant' ? (
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkCitations]}
-            rehypePlugins={[rehypeRaw]}
-            components={markdownComponents}
-          >
-            {displayContent || (message.isStreaming ? '正在整理典籍脉络…' : '')}
-          </ReactMarkdown>
+          <>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm, remarkCitations]}
+              rehypePlugins={[rehypeRaw]}
+              components={markdownComponents}
+            >
+              {displayContent || (message.isStreaming ? '正在整理典籍脉络…' : '')}
+            </ReactMarkdown>
+            {shouldShowDisclaimer && (
+              <p className="answer-disclaimer">{ANSWER_DISCLAIMER}</p>
+            )}
+          </>
         ) : (
           <p>{message.content}</p>
         )}
@@ -258,11 +310,6 @@ export default function App() {
   })
   const [question, setQuestion] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [selectedCitation, setSelectedCitation] = useState<{
-    messageId: string
-    referenceId: string
-  } | null>(null)
-  const [isReferencePanelOpen, setIsReferencePanelOpen] = useState(false)
   const [hoverPreview, setHoverPreview] = useState<{
     messageId: string
     referenceId: string
@@ -297,12 +344,6 @@ export default function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages])
 
-  const selectedMessage =
-    messages.find((message) => message.id === selectedCitation?.messageId) ?? null
-  const selectedReference =
-    selectedMessage?.references?.find(
-      (reference) => reference.reference_id === selectedCitation?.referenceId
-    ) ?? null
   const hoverMessage =
     messages.find((message) => message.id === hoverPreview?.messageId) ?? null
   const hoverReference =
@@ -311,8 +352,7 @@ export default function App() {
     ) ?? null
 
   useEffect(() => {
-    setSelectedCitation(null)
-    setIsReferencePanelOpen(false)
+    setHoverPreview(null)
   }, [currentSessionId])
 
   useEffect(() => {
@@ -351,8 +391,6 @@ export default function App() {
     setCurrentSessionId(null)
     setQuestion('')
     setIsSubmitting(false)
-    setSelectedCitation(null)
-    setIsReferencePanelOpen(false)
     setHoverPreview(null)
   }
 
@@ -406,8 +444,7 @@ export default function App() {
     setCurrentSessionId(sessionId)
     setQuestion('')
     setIsSubmitting(true)
-    setSelectedCitation(null)
-    setIsReferencePanelOpen(false)
+    setHoverPreview(null)
 
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -503,10 +540,7 @@ export default function App() {
     }
   }
 
-  const handleSelectReference = (referenceId: string, messageId: string) => {
-    setSelectedCitation({ referenceId, messageId })
-    setIsReferencePanelOpen(true)
-  }
+  const handleSelectReference = () => undefined
 
   const clearHoverHideTimer = () => {
     if (hoverHideTimerRef.current !== null) {
@@ -547,7 +581,7 @@ export default function App() {
   const hasMessages = messages.length > 0
 
   return (
-    <div className={`app-shell ${isReferencePanelOpen && selectedReference ? 'with-reference-panel' : 'without-reference-panel'}`}>
+    <div className="app-shell">
       <div className="mist mist-a" />
       <div className="mist mist-b" />
 
@@ -571,7 +605,7 @@ export default function App() {
               onClick={() => {
                 setSessions([])
                 setCurrentSessionId(null)
-                setSelectedCitation(null)
+                setHoverPreview(null)
               }}
             >
               清空
@@ -591,7 +625,7 @@ export default function App() {
                     }`}
                     onClick={() => {
                       setCurrentSessionId(session.id)
-                      setSelectedCitation(null)
+                      setHoverPreview(null)
                     }}
                   >
                     <span className="history-title">{session.title}</span>
@@ -773,42 +807,6 @@ export default function App() {
         </form>
       </main>
 
-      {isReferencePanelOpen && selectedReference && (
-        <aside className="reference-panel">
-          <div className="reference-header">
-            <div>
-              <p className="section-label">参考经卷</p>
-              <h3>引文详情</h3>
-            </div>
-            <button
-              type="button"
-              className="reference-close"
-              onClick={() => setIsReferencePanelOpen(false)}
-              aria-label="关闭参考经卷"
-            >
-              关闭
-            </button>
-          </div>
-
-          <article className="reference-card">
-            <p className="reference-badge">[{selectedReference.reference_id}]</p>
-            <h4>{summarizePath(selectedReference.file_path)}</h4>
-            <p className="reference-path">{selectedReference.file_path}</p>
-            <div className="reference-snippets">
-              {(selectedReference.content ?? ['当前引用未包含 chunk 内容。']).map((snippet, index) => (
-                <blockquote key={`${selectedReference.reference_id}-${index}`}>
-                  {snippetParagraphs(snippet).map((paragraph, paragraphIndex) => (
-                    <p key={`${selectedReference.reference_id}-${index}-${paragraphIndex}`}>
-                      {paragraph}
-                    </p>
-                  ))}
-                </blockquote>
-              ))}
-            </div>
-          </article>
-        </aside>
-      )}
-
       {hoverPreview && hoverReference && (
         <div
           className="floating-reference-preview"
@@ -824,13 +822,21 @@ export default function App() {
         >
           <p className="reference-badge">[{hoverReference.reference_id}]</p>
           <h4>{summarizePath(hoverReference.file_path)}</h4>
-          <p className="reference-path">{hoverReference.file_path}</p>
+          {normalizeEntityTerms(hoverReference.entity_terms).length > 0 && (
+            <div className="entity-terms">
+              {normalizeEntityTerms(hoverReference.entity_terms).map((term) => (
+                <span key={`${hoverReference.reference_id}-hover-${term}`} className="entity-chip">
+                  {term}
+                </span>
+              ))}
+            </div>
+          )}
           <div className="floating-reference-content">
             {(hoverReference.content ?? ['当前引用未包含 chunk 内容。']).map((snippet, index) => (
               <blockquote key={`${hoverReference.reference_id}-hover-${index}`}>
                 {snippetParagraphs(snippet).map((paragraph, paragraphIndex) => (
                   <p key={`${hoverReference.reference_id}-hover-${index}-${paragraphIndex}`}>
-                    {paragraph}
+                    {highlightEntityTerms(paragraph, hoverReference.entity_terms)}
                   </p>
                 ))}
               </blockquote>
