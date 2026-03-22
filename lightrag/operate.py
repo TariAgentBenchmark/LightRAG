@@ -400,6 +400,305 @@ def chunking_by_structure_priority(
     return chunks
 
 
+def _merge_chunk_pair(
+    tokenizer: Tokenizer,
+    left_chunk: dict[str, Any],
+    right_chunk: dict[str, Any],
+) -> dict[str, Any]:
+    merged_content = "\n\n".join(
+        [left_chunk["content"].strip(), right_chunk["content"].strip()]
+    ).strip()
+    merged_chunk = dict(left_chunk)
+    merged_chunk["content"] = merged_content
+    merged_chunk["tokens"] = len(tokenizer.encode(merged_content))
+    merged_chunk["_skip_rerank_merge"] = True
+    left_members = list(left_chunk.get("_original_chunk_order_indices", []))
+    right_members = list(right_chunk.get("_original_chunk_order_indices", []))
+    merged_chunk["_original_chunk_order_indices"] = left_members + right_members
+    return merged_chunk
+
+
+def _normalize_chunk_metadata(
+    tokenizer: Tokenizer,
+    chunks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized_chunks: list[dict[str, Any]] = []
+    for index, chunk in enumerate(chunks):
+        normalized_chunk = {
+            key: value for key, value in chunk.items() if not str(key).startswith("_")
+        }
+        normalized_chunk["content"] = normalized_chunk["content"].strip()
+        normalized_chunk["tokens"] = len(tokenizer.encode(normalized_chunk["content"]))
+        normalized_chunk["chunk_order_index"] = index
+        normalized_chunk["original_chunk_order_indices"] = list(
+            chunk.get("_original_chunk_order_indices", [chunk.get("chunk_order_index", index)])
+        )
+        normalized_chunks.append(normalized_chunk)
+    return normalized_chunks
+
+
+async def merge_small_adjacent_chunks_by_reranker(
+    tokenizer: Tokenizer,
+    chunks: list[dict[str, Any]],
+    rerank_model_func: Callable[..., object] | None,
+    chunk_token_size: int,
+    small_chunk_token_size: int = 100,
+    rerank_min_score: float = 0.25,
+    rerank_score_margin: float = 0.08,
+    debug_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Merge small adjacent chunks by comparing left/right neighbors with reranker.
+
+    The reranker is only asked to score the current small chunk against its
+    immediate neighbors. A merge happens only when:
+    1. The combined size stays within chunk_token_size.
+    2. The best rerank score exceeds rerank_min_score.
+    3. If both sides are available, the best score beats the other side by at
+       least rerank_score_margin.
+    """
+    if (
+        rerank_model_func is None
+        or len(chunks) < 2
+        or small_chunk_token_size <= 0
+        or chunk_token_size <= 0
+    ):
+        return _normalize_chunk_metadata(tokenizer, chunks)
+
+    merged_chunks = []
+    for chunk in chunks:
+        prepared_chunk = dict(chunk)
+        prepared_chunk.setdefault(
+            "_original_chunk_order_indices",
+            [prepared_chunk.get("chunk_order_index")],
+        )
+        merged_chunks.append(prepared_chunk)
+    chunk_index = 0
+
+    while chunk_index < len(merged_chunks):
+        current_chunk = merged_chunks[chunk_index]
+        current_tokens = int(current_chunk.get("tokens", 0))
+
+        if current_chunk.get("_skip_rerank_merge") or current_tokens > small_chunk_token_size:
+            chunk_index += 1
+            continue
+
+        candidates: list[tuple[str, int, dict[str, Any]]] = []
+        if chunk_index > 0:
+            left_chunk = merged_chunks[chunk_index - 1]
+            if left_chunk["tokens"] + current_tokens <= chunk_token_size:
+                candidates.append(("left", chunk_index - 1, left_chunk))
+        if chunk_index + 1 < len(merged_chunks):
+            right_chunk = merged_chunks[chunk_index + 1]
+            if current_tokens + right_chunk["tokens"] <= chunk_token_size:
+                candidates.append(("right", chunk_index + 1, right_chunk))
+
+        if not candidates:
+            if debug_callback is not None:
+                debug_callback(
+                    {
+                        "chunk_order_index": current_chunk.get(
+                            "chunk_order_index", chunk_index
+                        ),
+                        "original_chunk_order_indices": list(
+                            current_chunk.get("_original_chunk_order_indices", [])
+                        ),
+                        "chunk_tokens": current_tokens,
+                        "decision": "skip_no_candidates",
+                    }
+                )
+            chunk_index += 1
+            continue
+
+        documents = [candidate_chunk["content"] for _, _, candidate_chunk in candidates]
+        try:
+            rerank_results = await rerank_model_func(
+                query=current_chunk["content"],
+                documents=documents,
+                top_n=len(documents),
+            )
+        except Exception as exc:
+            if debug_callback is not None:
+                debug_callback(
+                    {
+                        "chunk_order_index": current_chunk.get(
+                            "chunk_order_index", chunk_index
+                        ),
+                        "original_chunk_order_indices": list(
+                            current_chunk.get("_original_chunk_order_indices", [])
+                        ),
+                        "chunk_tokens": current_tokens,
+                        "decision": "skip_reranker_error",
+                        "error": str(exc),
+                    }
+                )
+            logger.warning(
+                "Chunk rerank merge skipped for chunk %s due to reranker error: %s",
+                current_chunk.get("chunk_order_index", chunk_index),
+                exc,
+            )
+            chunk_index += 1
+            continue
+
+        score_by_direction = {direction: 0.0 for direction, _, _ in candidates}
+        for result in rerank_results or []:
+            result_index = result.get("index")
+            if not isinstance(result_index, int) or not (0 <= result_index < len(candidates)):
+                continue
+            direction = candidates[result_index][0]
+            score_by_direction[direction] = float(result.get("relevance_score", 0.0))
+
+        best_direction, best_score = max(
+            score_by_direction.items(),
+            key=lambda item: item[1],
+        )
+        if best_score < rerank_min_score:
+            if debug_callback is not None:
+                debug_callback(
+                    {
+                        "chunk_order_index": current_chunk.get(
+                            "chunk_order_index", chunk_index
+                        ),
+                        "original_chunk_order_indices": list(
+                            current_chunk.get("_original_chunk_order_indices", [])
+                        ),
+                        "chunk_tokens": current_tokens,
+                        "decision": "skip_below_min_score",
+                        "scores": score_by_direction,
+                        "thresholds": {
+                            "min_score": rerank_min_score,
+                            "score_margin": rerank_score_margin,
+                        },
+                    }
+                )
+            chunk_index += 1
+            continue
+
+        if len(score_by_direction) > 1:
+            other_score = max(
+                score
+                for direction, score in score_by_direction.items()
+                if direction != best_direction
+            )
+            if best_score - other_score < rerank_score_margin:
+                if debug_callback is not None:
+                    debug_callback(
+                    {
+                        "chunk_order_index": current_chunk.get(
+                            "chunk_order_index", chunk_index
+                        ),
+                        "original_chunk_order_indices": list(
+                            current_chunk.get("_original_chunk_order_indices", [])
+                        ),
+                        "chunk_tokens": current_tokens,
+                        "decision": "skip_margin_too_small",
+                        "scores": score_by_direction,
+                            "thresholds": {
+                                "min_score": rerank_min_score,
+                                "score_margin": rerank_score_margin,
+                            },
+                        }
+                    )
+                chunk_index += 1
+                continue
+
+        if best_direction == "left":
+            left_index = chunk_index - 1
+            merged_chunks[left_index] = _merge_chunk_pair(
+                tokenizer,
+                merged_chunks[left_index],
+                current_chunk,
+            )
+            if debug_callback is not None:
+                debug_callback(
+                    {
+                        "chunk_order_index": current_chunk.get(
+                            "chunk_order_index", chunk_index
+                        ),
+                        "original_chunk_order_indices": list(
+                            current_chunk.get("_original_chunk_order_indices", [])
+                        ),
+                        "chunk_tokens": current_tokens,
+                        "decision": "merge_left",
+                        "scores": score_by_direction,
+                        "target_chunk_order_index": merged_chunks[left_index].get(
+                            "chunk_order_index", left_index
+                        ),
+                        "target_original_chunk_order_indices": list(
+                            merged_chunks[left_index].get(
+                                "_original_chunk_order_indices", []
+                            )
+                        ),
+                    }
+                )
+            del merged_chunks[chunk_index]
+            chunk_index = max(0, left_index)
+        else:
+            right_index = chunk_index + 1
+            merged_chunks[chunk_index] = _merge_chunk_pair(
+                tokenizer,
+                current_chunk,
+                merged_chunks[right_index],
+            )
+            if debug_callback is not None:
+                debug_callback(
+                    {
+                        "chunk_order_index": current_chunk.get(
+                            "chunk_order_index", chunk_index
+                        ),
+                        "original_chunk_order_indices": list(
+                            current_chunk.get("_original_chunk_order_indices", [])
+                        ),
+                        "chunk_tokens": current_tokens,
+                        "decision": "merge_right",
+                        "scores": score_by_direction,
+                        "target_chunk_order_index": merged_chunks[chunk_index].get(
+                            "chunk_order_index", chunk_index
+                        ),
+                        "target_original_chunk_order_indices": list(
+                            merged_chunks[chunk_index].get(
+                                "_original_chunk_order_indices", []
+                            )
+                        ),
+                    }
+                )
+            del merged_chunks[right_index]
+
+    return _normalize_chunk_metadata(tokenizer, merged_chunks)
+
+
+async def chunking_by_structure_priority_with_reranker(
+    tokenizer: Tokenizer,
+    content: str,
+    split_by_character: str | None = None,
+    split_by_character_only: bool = False,
+    chunk_overlap_token_size: int = 100,
+    chunk_token_size: int = 1200,
+    rerank_model_func: Callable[..., object] | None = None,
+    small_chunk_token_size: int = 100,
+    rerank_min_score: float = 0.25,
+    rerank_score_margin: float = 0.08,
+    debug_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
+    chunks = chunking_by_structure_priority(
+        tokenizer,
+        content,
+        split_by_character,
+        split_by_character_only,
+        chunk_overlap_token_size,
+        chunk_token_size,
+    )
+    return await merge_small_adjacent_chunks_by_reranker(
+        tokenizer=tokenizer,
+        chunks=chunks,
+        rerank_model_func=rerank_model_func,
+        chunk_token_size=chunk_token_size,
+        small_chunk_token_size=small_chunk_token_size,
+        rerank_min_score=rerank_min_score,
+        rerank_score_margin=rerank_score_margin,
+        debug_callback=debug_callback,
+    )
+
+
 async def _handle_entity_relation_summary(
     description_type: str,
     entity_or_relation_name: str,

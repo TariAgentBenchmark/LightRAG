@@ -88,6 +88,7 @@ from lightrag.base import (
 from lightrag.namespace import NameSpace
 from lightrag.operate import (
     chunking_by_structure_priority,
+    chunking_by_structure_priority_with_reranker,
     chunking_by_token_size,
     extract_entities,
     merge_nodes_and_edges,
@@ -259,6 +260,26 @@ class LightRAG:
         default=int(os.getenv("CHUNK_OVERLAP_SIZE", 100))
     )
     """Number of overlapping tokens between consecutive text chunks to preserve context."""
+
+    enable_chunk_merge_by_rerank: bool = field(
+        default=get_env_value("ENABLE_CHUNK_MERGE_BY_RERANK", False, bool)
+    )
+    """Enable reranker-based post-processing to merge small adjacent chunks after structure-aware chunking."""
+
+    chunk_merge_small_chunk_tokens: int = field(
+        default=get_env_value("CHUNK_MERGE_SMALL_CHUNK_TOKENS", 100, int)
+    )
+    """Maximum token size of a chunk eligible for reranker-based adjacent merge."""
+
+    chunk_merge_rerank_min_score: float = field(
+        default=get_env_value("CHUNK_MERGE_RERANK_MIN_SCORE", 0.25, float)
+    )
+    """Minimum reranker score required before merging a small chunk with a neighbor."""
+
+    chunk_merge_rerank_score_margin: float = field(
+        default=get_env_value("CHUNK_MERGE_RERANK_SCORE_MARGIN", 0.08, float)
+    )
+    """Minimum score margin required to choose one merge direction over the other."""
 
     tokenizer: Optional[Tokenizer] = field(default=None)
     """
@@ -538,6 +559,24 @@ class LightRAG:
                 self.tokenizer = TiktokenTokenizer(self.tiktoken_model_name)
             else:
                 self.tokenizer = TiktokenTokenizer()
+
+        if (
+            self.chunking_func is chunking_by_structure_priority
+            and self.enable_chunk_merge_by_rerank
+        ):
+            if self.rerank_model_func is None:
+                logger.warning(
+                    "ENABLE_CHUNK_MERGE_BY_RERANK is enabled, but rerank_model_func is not configured. "
+                    "Falling back to structure-aware chunking without reranker merge."
+                )
+            else:
+                self.chunking_func = partial(
+                    chunking_by_structure_priority_with_reranker,
+                    rerank_model_func=self.rerank_model_func,
+                    small_chunk_token_size=self.chunk_merge_small_chunk_tokens,
+                    rerank_min_score=self.chunk_merge_rerank_min_score,
+                    rerank_score_margin=self.chunk_merge_rerank_score_margin,
+                )
 
         # Initialize ollama_server_infos if not provided
         if self.ollama_server_infos is None:

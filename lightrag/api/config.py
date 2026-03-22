@@ -375,6 +375,18 @@ def parse_args() -> argparse.Namespace:
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
+    args.enable_chunk_merge_by_rerank = get_env_value(
+        "ENABLE_CHUNK_MERGE_BY_RERANK", False, bool
+    )
+    args.chunk_merge_small_chunk_tokens = get_env_value(
+        "CHUNK_MERGE_SMALL_CHUNK_TOKENS", 100, int
+    )
+    args.chunk_merge_rerank_min_score = get_env_value(
+        "CHUNK_MERGE_RERANK_MIN_SCORE", 0.25, float
+    )
+    args.chunk_merge_rerank_score_margin = get_env_value(
+        "CHUNK_MERGE_RERANK_SCORE_MARGIN", 0.08, float
+    )
 
     # Inject LLM cache configuration
     args.enable_llm_cache_for_extract = get_env_value(

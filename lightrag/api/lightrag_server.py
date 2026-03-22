@@ -1072,6 +1072,10 @@ def create_app(args):
             summary_context_size=args.summary_context_size,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
+            enable_chunk_merge_by_rerank=args.enable_chunk_merge_by_rerank,
+            chunk_merge_small_chunk_tokens=args.chunk_merge_small_chunk_tokens,
+            chunk_merge_rerank_min_score=args.chunk_merge_rerank_min_score,
+            chunk_merge_rerank_score_margin=args.chunk_merge_rerank_score_margin,
             hf_tokenizer_name=args.hf_tokenizer_model,
             llm_model_kwargs=create_llm_model_kwargs(
                 args.llm_binding, args, llm_timeout
