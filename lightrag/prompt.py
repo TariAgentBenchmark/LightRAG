@@ -246,6 +246,8 @@ Consider the conversation history if provided to maintain conversational flow an
 2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
   - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+  - Answer the user's question directly and naturally. Do not mention the retrieval process, the knowledge base, the provided context, document chunks, references, or source limitations unless the user explicitly asks about sources or the answer is unavailable.
+  - Do not use meta lead-ins such as "Based on the provided knowledge base", "According to the provided context", or similar source-framing phrasing before answering.
 
 3. Formatting & Language:
   - The response MUST be in the same language as the user query.
@@ -308,6 +310,8 @@ Consider the conversation history if provided to maintain conversational flow an
 2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
   - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+  - Answer the user's question directly and naturally. Do not mention the retrieval process, the knowledge base, the provided context, document chunks, references, or source limitations unless the user explicitly asks about sources or the answer is unavailable.
+  - Do not use meta lead-ins such as "Based on the provided knowledge base", "According to the provided context", or similar source-framing phrasing before answering.
 
 3. Formatting & Language:
   - The response MUST be in the same language as the user query.
