@@ -3,6 +3,7 @@ This module contains all query-related routes for the LightRAG API.
 """
 
 import json
+import re
 from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
@@ -11,6 +12,137 @@ from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
 
 router = APIRouter(tags=["query"])
+
+
+_INLINE_CITATION_RE = re.compile(r"\[(\^?\d+(?:\s*,\s*\d+)*)\]")
+_REFERENCE_HEADER_RE = re.compile(
+    r"^\s{0,3}(?:#{1,6}\s*)?(?:references|reference|参考文献)\s*$",
+    re.IGNORECASE,
+)
+_REFERENCE_ENTRY_RE = re.compile(r"^(\s*(?:[-*+]\s*)?)\[(\d+)\](\s+.*)?$")
+
+
+def _sanitize_inline_citations(text: str, valid_reference_ids: set[str]) -> str:
+    """Remove inline citation markers that do not exist in the reference list."""
+
+    if not text or not valid_reference_ids:
+        return _INLINE_CITATION_RE.sub("", text)
+
+    def replace(match: re.Match[str]) -> str:
+        normalized_ids = [
+            item.strip()
+            for item in match.group(1).replace("^", "").split(",")
+            if item.strip()
+        ]
+        kept_ids = [ref_id for ref_id in normalized_ids if ref_id in valid_reference_ids]
+        if not kept_ids:
+            return ""
+        return "".join(f"[{ref_id}]" for ref_id in kept_ids)
+
+    sanitized = _INLINE_CITATION_RE.sub(replace, text)
+    sanitized = re.sub(r"[ \t]{2,}", " ", sanitized)
+    sanitized = re.sub(r"\s+([，。！？；：,.!?;:])", r"\1", sanitized)
+    return sanitized
+
+
+def _sanitize_line_with_reference_state(
+    line: str, in_references_section: bool, valid_reference_ids: set[str]
+) -> tuple[str, bool]:
+    """Sanitize one line while tracking whether the output is inside the references section."""
+
+    newline = ""
+    if line.endswith("\r\n"):
+        newline = "\r\n"
+        content = line[:-2]
+    elif line.endswith("\n"):
+        newline = "\n"
+        content = line[:-1]
+    else:
+        content = line
+
+    if _REFERENCE_HEADER_RE.match(content.strip()):
+        return f"{content}{newline}", True
+
+    if in_references_section:
+        stripped = content.strip()
+        if not stripped:
+            return f"{content}{newline}", True
+
+        ref_match = _REFERENCE_ENTRY_RE.match(content)
+        if ref_match:
+            return (
+                (f"{content}{newline}" if ref_match.group(2) in valid_reference_ids else ""),
+                True,
+            )
+
+        in_references_section = False
+
+    sanitized_content = _sanitize_inline_citations(content, valid_reference_ids)
+    return f"{sanitized_content}{newline}", in_references_section
+
+
+def sanitize_response_citations(content: str, valid_reference_ids: set[str]) -> str:
+    """Sanitize dangling citations in a complete response while preserving valid ones."""
+
+    if not content:
+        return content
+
+    sanitized_parts: list[str] = []
+    in_references_section = False
+    for line in content.splitlines(keepends=True):
+        sanitized_line, in_references_section = _sanitize_line_with_reference_state(
+            line, in_references_section, valid_reference_ids
+        )
+        sanitized_parts.append(sanitized_line)
+
+    return "".join(sanitized_parts)
+
+
+class StreamingCitationSanitizer:
+    """Incrementally sanitize streamed response chunks without buffering the full answer."""
+
+    def __init__(self, valid_reference_ids: set[str], tail_guard: int = 32) -> None:
+        self.valid_reference_ids = valid_reference_ids
+        self.tail_guard = tail_guard
+        self.buffer = ""
+        self.in_references_section = False
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+
+        self.buffer += chunk
+        sanitized_parts: list[str] = []
+
+        while True:
+            newline_index = self.buffer.find("\n")
+            if newline_index == -1:
+                break
+            line = self.buffer[: newline_index + 1]
+            self.buffer = self.buffer[newline_index + 1 :]
+            sanitized_line, self.in_references_section = _sanitize_line_with_reference_state(
+                line, self.in_references_section, self.valid_reference_ids
+            )
+            sanitized_parts.append(sanitized_line)
+
+        if not self.in_references_section and len(self.buffer) > self.tail_guard:
+            safe_prefix = self.buffer[:-self.tail_guard]
+            self.buffer = self.buffer[-self.tail_guard :]
+            sanitized_parts.append(
+                _sanitize_inline_citations(safe_prefix, self.valid_reference_ids)
+            )
+
+        return "".join(sanitized_parts)
+
+    def flush(self) -> str:
+        if not self.buffer:
+            return ""
+
+        sanitized_tail, self.in_references_section = _sanitize_line_with_reference_state(
+            self.buffer, self.in_references_section, self.valid_reference_ids
+        )
+        self.buffer = ""
+        return sanitized_tail
 
 
 class QueryRequest(BaseModel):
@@ -477,6 +609,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 references = enrich_references(
                     references, data, request.include_chunk_content
                 )
+            valid_reference_ids = {
+                str(reference.get("reference_id", "")).strip()
+                for reference in references
+                if str(reference.get("reference_id", "")).strip()
+            }
+            response_content = sanitize_response_citations(
+                response_content, valid_reference_ids
+            )
 
             # Return response with or without references based on request
             if request.include_references:
@@ -713,6 +853,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     references = enrich_references(
                         references, data, request.include_chunk_content
                     )
+                valid_reference_ids = {
+                    str(reference.get("reference_id", "")).strip()
+                    for reference in references
+                    if str(reference.get("reference_id", "")).strip()
+                }
 
                 if llm_response.get("is_streaming"):
                     # Streaming mode: send references first, then stream response chunks
@@ -721,10 +866,16 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
                     response_stream = llm_response.get("response_iterator")
                     if response_stream:
+                        sanitizer = StreamingCitationSanitizer(valid_reference_ids)
                         try:
                             async for chunk in response_stream:
                                 if chunk:  # Only send non-empty content
-                                    yield f"{json.dumps({'response': chunk})}\n"
+                                    sanitized_chunk = sanitizer.feed(chunk)
+                                    if sanitized_chunk:
+                                        yield f"{json.dumps({'response': sanitized_chunk})}\n"
+                            remaining_content = sanitizer.flush()
+                            if remaining_content:
+                                yield f"{json.dumps({'response': remaining_content})}\n"
                         except Exception as e:
                             logger.error(f"Streaming error: {str(e)}")
                             yield f"{json.dumps({'error': str(e)})}\n"
@@ -733,6 +884,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     response_content = llm_response.get("content", "")
                     if not response_content:
                         response_content = "No relevant context found for the query."
+                    response_content = sanitize_response_citations(
+                        response_content, valid_reference_ids
+                    )
 
                     # Create complete response object
                     complete_response = {"response": response_content}
