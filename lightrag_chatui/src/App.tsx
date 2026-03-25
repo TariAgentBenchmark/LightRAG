@@ -589,7 +589,7 @@ export default function App() {
         <div className="brand-block">
           <div className="brand-seal">道</div>
           <div>
-            <h1>道教问答</h1>
+            <h1>玄德问答</h1>
           </div>
         </div>
 
@@ -663,7 +663,7 @@ export default function App() {
                 <input
                   value={config.baseUrl}
                   onChange={(event) => updateConfig('baseUrl', event.target.value)}
-                  placeholder="http://localhost:9621"
+                  placeholder="http://121.41.189.137/chat-api/"
                 />
               </label>
               <label>

@@ -4,7 +4,7 @@ const CONFIG_STORAGE_KEY = 'LIGHTRAG_CHATUI_CONFIG'
 const SESSION_STORAGE_KEY = 'LIGHTRAG_CHATUI_SESSIONS'
 
 export const defaultConfig: AppConfig = {
-  baseUrl: 'http://localhost:9621',
+  baseUrl: 'http://121.41.189.137/chat-api/',
   apiKey: '',
   bearerToken: '',
   mode: 'mix',
@@ -26,7 +26,8 @@ export const loadConfig = (): AppConfig => {
     const parsed = JSON.parse(raw) as Partial<AppConfig>
     return {
       ...defaultConfig,
-      ...parsed
+      ...parsed,
+      baseUrl: defaultConfig.baseUrl
     }
   } catch {
     return defaultConfig
