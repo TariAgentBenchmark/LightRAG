@@ -300,6 +300,11 @@ export default function App() {
   })
   const [question, setQuestion] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
+  const [touchReference, setTouchReference] = useState<{
+    messageId: string
+    referenceId: string
+  } | null>(null)
   const [hoverPreview, setHoverPreview] = useState<{
     messageId: string
     referenceId: string
@@ -307,6 +312,7 @@ export default function App() {
   } | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const hoverShowTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const hoverHideTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
 
@@ -339,8 +345,23 @@ export default function App() {
       (reference) => reference.reference_id === hoverPreview?.referenceId
     ) ?? null
 
+  const touchMessage = touchReference
+    ? messages.find((message) => message.id === touchReference.messageId)
+    : null
+  const touchMessageReference = touchMessage?.references?.find(
+    (reference) => reference.reference_id === touchReference?.referenceId
+  ) ?? null
+
+  const handleTextareaChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const textarea = event.currentTarget
+    setQuestion(event.target.value)
+    textarea.style.height = 'auto'
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
+  }
+
   useEffect(() => {
     setHoverPreview(null)
+    setTouchReference(null)
   }, [currentSessionId])
 
   useEffect(() => {
@@ -367,12 +388,15 @@ export default function App() {
     })
   }
 
+  const closeMobileDrawer = () => setMobileDrawerOpen(false)
+
   const resetConversation = () => {
     abortRef.current?.abort()
     setCurrentSessionId(null)
     setQuestion('')
     setIsSubmitting(false)
     setHoverPreview(null)
+    setMobileDrawerOpen(false)
   }
 
   const submitQuestion = async (seedQuestion?: string) => {
@@ -426,6 +450,9 @@ export default function App() {
     setQuestion('')
     setIsSubmitting(true)
     setHoverPreview(null)
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+    }
 
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -521,7 +548,9 @@ export default function App() {
     }
   }
 
-  const handleSelectReference = () => undefined
+  const handleSelectReference = (referenceId: string, messageId: string) => {
+    setTouchReference({ referenceId, messageId })
+  }
 
   const clearHoverHideTimer = () => {
     if (hoverHideTimerRef.current !== null) {
@@ -566,7 +595,14 @@ export default function App() {
       <div className="mist mist-a" />
       <div className="mist mist-b" />
 
-      <aside className="left-rail">
+      <button
+        type="button"
+        className={`mobile-drawer-overlay ${mobileDrawerOpen ? 'open' : ''}`}
+        onClick={closeMobileDrawer}
+        aria-label="关闭菜单"
+      />
+
+      <aside className={`left-rail ${mobileDrawerOpen ? 'mobile-open' : ''}`}>
         <div className="brand-block">
           <div className="brand-seal">道</div>
           <div>
@@ -587,6 +623,7 @@ export default function App() {
                 setSessions([])
                 setCurrentSessionId(null)
                 setHoverPreview(null)
+                closeMobileDrawer()
               }}
             >
               清空
@@ -607,6 +644,7 @@ export default function App() {
                     onClick={() => {
                       setCurrentSessionId(session.id)
                       setHoverPreview(null)
+                      closeMobileDrawer()
                     }}
                   >
                     <span className="history-title">{session.title}</span>
@@ -634,7 +672,19 @@ export default function App() {
 
       <main className="chat-stage">
         <header className="topbar">
-          <div>
+          <button
+            type="button"
+            className="mobile-menu-toggle"
+            onClick={() => setMobileDrawerOpen(true)}
+            aria-label="打开菜单"
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
+          <div className="topbar-title">
             <h2>经卷问答册</h2>
           </div>
         </header>
@@ -678,10 +728,11 @@ export default function App() {
           }}
         >
           <textarea
+            ref={textareaRef}
             value={question}
-            onChange={(event) => setQuestion(event.target.value)}
+            onChange={handleTextareaChange}
             placeholder="写下你的问题"
-            rows={3}
+            rows={1}
           />
           <div className="composer-footer">
             <div className="composer-actions">
@@ -736,6 +787,51 @@ export default function App() {
                 ))}
               </blockquote>
             ))}
+          </div>
+        </div>
+      )}
+
+      {touchReference && touchMessageReference && (
+        <div className="mobile-reference-sheet" onClick={() => setTouchReference(null)}>
+          <div className="sheet-body" onClick={(event) => event.stopPropagation()}>
+            <div className="sheet-handle" />
+            <div className="sheet-header">
+              <div>
+                <p className="reference-badge">[{touchMessageReference.reference_id}]</p>
+                <h3>{summarizePath(touchMessageReference.file_path)}</h3>
+              </div>
+              <button
+                type="button"
+                className="sheet-close"
+                onClick={() => setTouchReference(null)}
+                aria-label="关闭"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            {normalizeEntityTerms(touchMessageReference.entity_terms).length > 0 && (
+              <div className="entity-terms">
+                {normalizeEntityTerms(touchMessageReference.entity_terms).map((term) => (
+                  <span key={`${touchMessageReference.reference_id}-touch-${term}`} className="entity-chip">
+                    {term}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="sheet-content">
+              {(touchMessageReference.content ?? ['当前引用未包含 chunk 内容。']).map((snippet, index) => (
+                <blockquote key={`${touchMessageReference.reference_id}-touch-${index}`}>
+                  {snippetParagraphs(snippet).map((paragraph, paragraphIndex) => (
+                    <p key={`${touchMessageReference.reference_id}-touch-${index}-${paragraphIndex}`}>
+                      {highlightEntityTerms(paragraph, touchMessageReference.entity_terms)}
+                    </p>
+                  ))}
+                </blockquote>
+              ))}
+            </div>
           </div>
         </div>
       )}
