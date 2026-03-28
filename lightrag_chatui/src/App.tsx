@@ -9,7 +9,6 @@ import type {
   AppConfig,
   ChatMessage,
   ChatSession,
-  QueryMode,
   ReferenceItem
 } from './types/chat'
 
@@ -20,15 +19,6 @@ const makeId = () => {
 
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
-
-const MODE_OPTIONS: Array<{ value: QueryMode; label: string }> = [
-  { value: 'mix', label: '混合检索' },
-  { value: 'hybrid', label: 'Hybrid' },
-  { value: 'local', label: 'Local' },
-  { value: 'global', label: 'Global' },
-  { value: 'naive', label: 'Naive' },
-  { value: 'bypass', label: 'Bypass' }
-]
 
 const STARTER_PROMPTS = [
   '做梦好不好？',
@@ -56,7 +46,7 @@ const stripKnownFileExtensions = (text: string) =>
   text.replace(/\s*\.[A-Za-z0-9]{1,10}\b/g, '')
 
 const ANSWER_DISCLAIMER =
-  '以上AI解答仅作参考。最终要以熊老师的本人的回答为准。'
+  '以上AI解答仅作参考。最终要以厚音老师的本人的回答为准。'
 
 const buildConversationHistory = (messages: ChatMessage[], historyTurns: number) => {
   const eligible = messages
@@ -279,7 +269,7 @@ const MessageCard = ({
               rehypePlugins={[rehypeRaw]}
               components={markdownComponents}
             >
-              {displayContent || (message.isStreaming ? '正在整理典籍脉络…' : '')}
+              {displayContent || (message.isStreaming ? '请稍候...' : '')}
             </ReactMarkdown>
             {shouldShowDisclaimer && (
               <p className="answer-disclaimer">{ANSWER_DISCLAIMER}</p>
@@ -315,8 +305,6 @@ export default function App() {
     referenceId: string
     anchorRect: DOMRect
   } | null>(null)
-  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false)
-  const [showSettings, setShowSettings] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
   const hoverShowTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
@@ -365,13 +353,6 @@ export default function App() {
       }
     }
   }, [])
-
-  const updateConfig = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
-    setConfig((current) => ({
-      ...current,
-      [key]: value
-    }))
-  }
 
   const upsertSession = (
     sessionId: string,
@@ -649,98 +630,12 @@ export default function App() {
           </div>
         </section>
 
-        <section className="rail-section">
-          <div className="section-row">
-            <p className="section-label">接口设定</p>
-            <button className="text-button" onClick={() => setShowSettings((value) => !value)}>
-              {showSettings ? '收起' : '展开'}
-            </button>
-          </div>
-          {showSettings && (
-            <div className="settings-card">
-              <label>
-                API Base URL
-                <input
-                  value={config.baseUrl}
-                  onChange={(event) => updateConfig('baseUrl', event.target.value)}
-                  placeholder="http://121.41.189.137/chat-api/"
-                />
-              </label>
-              <label>
-                X-API-Key
-                <input
-                  value={config.apiKey}
-                  onChange={(event) => updateConfig('apiKey', event.target.value)}
-                  placeholder="可留空"
-                />
-              </label>
-              <label>
-                Bearer Token
-                <input
-                  value={config.bearerToken}
-                  onChange={(event) => updateConfig('bearerToken', event.target.value)}
-                  placeholder="可留空"
-                />
-              </label>
-            </div>
-          )}
-        </section>
       </aside>
 
       <main className="chat-stage">
         <header className="topbar">
           <div>
             <h2>经卷问答册</h2>
-          </div>
-          <div className="topbar-settings">
-            <button
-              type="button"
-              className="advanced-toggle"
-              onClick={() => setShowAdvancedOptions((value) => !value)}
-            >
-              <span>高级选项</span>
-              <span>{showAdvancedOptions ? '收起' : '展开'}</span>
-            </button>
-
-            {showAdvancedOptions && (
-              <div className="topbar-controls advanced-controls">
-                <label>
-                  检索模式
-                  <select
-                    value={config.mode}
-                    onChange={(event) => updateConfig('mode', event.target.value as QueryMode)}
-                  >
-                    {MODE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Top K
-                  <input
-                    type="number"
-                    min={1}
-                    max={60}
-                    value={config.topK}
-                    onChange={(event) => updateConfig('topK', Number(event.target.value) || 1)}
-                  />
-                </label>
-                <label>
-                  历史轮数
-                  <input
-                    type="number"
-                    min={0}
-                    max={12}
-                    value={config.historyTurns}
-                    onChange={(event) =>
-                      updateConfig('historyTurns', Math.max(0, Number(event.target.value) || 0))
-                    }
-                  />
-                </label>
-              </div>
-            )}
           </div>
         </header>
 
@@ -785,7 +680,7 @@ export default function App() {
           <textarea
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
-            placeholder="可问经义、术语、修持次第、梦境材料对读等。"
+            placeholder="写下你的问题"
             rows={3}
           />
           <div className="composer-footer">
