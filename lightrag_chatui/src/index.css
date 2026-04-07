@@ -459,9 +459,33 @@ button {
 
 .message-meta {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   color: var(--muted);
   font-size: 0.76rem;
+}
+
+.message-audio-button {
+  padding: 0.28rem 0.7rem;
+  border: 1px solid rgba(35, 66, 60, 0.12);
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(255, 251, 244, 0.85);
+  font-size: 0.75rem;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.message-audio-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(35, 66, 60, 0.2);
+  background: rgba(248, 241, 229, 0.96);
+}
+
+.message-audio-button.active {
+  color: #fffaf0;
+  border-color: rgba(93, 36, 19, 0.4);
+  background: linear-gradient(135deg, #9b4d34, #7b3724);
 }
 
 .message-body {
@@ -559,9 +583,25 @@ button {
   margin-top: 12px;
 }
 
+.composer-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.composer-error {
+  color: var(--vermilion);
+}
+
 .composer-actions {
   display: flex;
   gap: 10px;
+}
+
+.mic-action.recording {
+  color: #fffaf0;
+  border-color: rgba(120, 24, 24, 0.36);
+  background: linear-gradient(135deg, #8a2f2f, #b24a3b);
 }
 
 .stream-indicator {

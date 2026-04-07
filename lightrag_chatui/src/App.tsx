@@ -3,6 +3,8 @@ import ReactMarkdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
 import { streamQuery } from './api/lightrag'
+import { createSpeechAsrSocket, synthesizeSpeech } from './api/speech'
+import { startPCMRecorder } from './lib/pcmRecorder'
 import { loadConfig, loadSessions, saveConfig, saveSessions } from './lib/storage'
 import { remarkCitations } from './lib/remarkCitations'
 import type {
@@ -44,6 +46,15 @@ const summarizeQuestion = (text: string) => {
 
 const stripKnownFileExtensions = (text: string) =>
   text.replace(/\s*\.[A-Za-z0-9]{1,10}\b/g, '')
+
+const stripCitationMarkers = (text: string) =>
+  text.replace(/\[(\^?\d+(?:\s*,\s*\d+)*)\]/g, '')
+
+const toSpeakableText = (text: string) =>
+  stripCitationMarkers(stripKnownFileExtensions(text))
+    .replace(/[*_`>#-]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
 
 const ANSWER_DISCLAIMER =
   '以上AI解答仅作参考。最终要以厚音老师的本人的回答为准。'
@@ -198,16 +209,22 @@ const CitationRef = ({
 
 type MessageCardProps = {
   message: ChatMessage
+  isSpeaking: boolean
+  isSpeechLoading: boolean
   onHoverReferenceStart: (referenceId: string, messageId: string, anchorRect: DOMRect) => void
   onHoverReferenceEnd: () => void
   onSelectReference: (referenceId: string, messageId: string) => void
+  onToggleSpeak: (message: ChatMessage) => void
 }
 
 const MessageCard = ({
   message,
+  isSpeaking,
+  isSpeechLoading,
   onHoverReferenceStart,
   onHoverReferenceEnd,
-  onSelectReference
+  onSelectReference,
+  onToggleSpeak
 }: MessageCardProps) => {
   const displayContent =
     message.role === 'assistant' ? stripKnownFileExtensions(message.content) : message.content
@@ -260,6 +277,16 @@ const MessageCard = ({
             minute: '2-digit'
           })}
         </span>
+        {message.role === 'assistant' && !message.isStreaming && !message.error && (
+          <button
+            type="button"
+            className={`message-audio-button ${isSpeaking ? 'active' : ''}`}
+            onClick={() => onToggleSpeak(message)}
+            disabled={isSpeechLoading && !isSpeaking}
+          >
+            {isSpeechLoading && !isSpeaking ? '朗读准备中…' : isSpeaking ? '停止朗读' : '朗读'}
+          </button>
+        )}
       </div>
       <div className="message-body">
         {message.role === 'assistant' ? (
@@ -300,6 +327,10 @@ export default function App() {
   })
   const [question, setQuestion] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isRecording, setIsRecording] = useState(false)
+  const [speechError, setSpeechError] = useState('')
+  const [speechLoadingMessageId, setSpeechLoadingMessageId] = useState<string | null>(null)
+  const [playingMessageId, setPlayingMessageId] = useState<string | null>(null)
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
   const [touchReference, setTouchReference] = useState<{
     messageId: string
@@ -311,6 +342,10 @@ export default function App() {
     anchorRect: DOMRect
   } | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const asrSocketRef = useRef<WebSocket | null>(null)
+  const recorderStopRef = useRef<(() => Promise<void>) | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const audioUrlRef = useRef<string | null>(null)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const hoverShowTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
@@ -352,11 +387,20 @@ export default function App() {
     (reference) => reference.reference_id === touchReference?.referenceId
   ) ?? null
 
+  const resizeTextarea = (value: string) => {
+    if (!textareaRef.current) {
+      return
+    }
+
+    textareaRef.current.value = value
+    textareaRef.current.style.height = 'auto'
+    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`
+  }
+
   const handleTextareaChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const textarea = event.currentTarget
-    setQuestion(event.target.value)
-    textarea.style.height = 'auto'
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
+    const nextValue = event.target.value
+    setQuestion(nextValue)
+    resizeTextarea(nextValue)
   }
 
   useEffect(() => {
@@ -371,6 +415,22 @@ export default function App() {
       }
       if (hoverHideTimerRef.current !== null) {
         window.clearTimeout(hoverHideTimerRef.current)
+      }
+
+      asrSocketRef.current?.close()
+      asrSocketRef.current = null
+
+      void recorderStopRef.current?.()
+      recorderStopRef.current = null
+
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current)
+        audioUrlRef.current = null
       }
     }
   }, [])
@@ -392,6 +452,22 @@ export default function App() {
 
   const resetConversation = () => {
     abortRef.current?.abort()
+    asrSocketRef.current?.close()
+    asrSocketRef.current = null
+    void recorderStopRef.current?.()
+    recorderStopRef.current = null
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+      audioUrlRef.current = null
+    }
+    setPlayingMessageId(null)
+    setSpeechLoadingMessageId(null)
+    setIsRecording(false)
+    setSpeechError('')
     setCurrentSessionId(null)
     setQuestion('')
     setIsSubmitting(false)
@@ -399,7 +475,165 @@ export default function App() {
     setMobileDrawerOpen(false)
   }
 
+  const stopSpeaking = () => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+      audioUrlRef.current = null
+    }
+
+    setPlayingMessageId(null)
+    setSpeechLoadingMessageId(null)
+  }
+
+  const handleToggleSpeak = async (message: ChatMessage) => {
+    if (playingMessageId === message.id) {
+      stopSpeaking()
+      return
+    }
+
+    stopSpeaking()
+    setSpeechError('')
+    setSpeechLoadingMessageId(message.id)
+
+    try {
+      const speakableText = toSpeakableText(message.content)
+      if (!speakableText) {
+        throw new Error('当前回答没有可朗读的内容。')
+      }
+
+      const blob = await synthesizeSpeech(config.baseUrl, speakableText, {
+        apiKey: config.apiKey,
+        bearerToken: config.bearerToken
+      })
+
+      const audioUrl = URL.createObjectURL(blob)
+      const audio = new Audio(audioUrl)
+      audioRef.current = audio
+      audioUrlRef.current = audioUrl
+      setPlayingMessageId(message.id)
+
+      audio.onended = () => {
+        stopSpeaking()
+      }
+      audio.onerror = () => {
+        setSpeechError('语音播放失败。')
+        stopSpeaking()
+      }
+
+      await audio.play()
+    } catch (error) {
+      setSpeechError(error instanceof Error ? error.message : '语音合成失败。')
+      stopSpeaking()
+    } finally {
+      setSpeechLoadingMessageId((current) => (current === message.id ? null : current))
+    }
+  }
+
+  const stopVoiceInput = async () => {
+    const socket = asrSocketRef.current
+    const stopRecorder = recorderStopRef.current
+
+    recorderStopRef.current = null
+    asrSocketRef.current = null
+
+    if (stopRecorder) {
+      await stopRecorder()
+    }
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'end' }))
+    } else if (socket && socket.readyState === WebSocket.CONNECTING) {
+      socket.close()
+    }
+
+    setIsRecording(false)
+  }
+
+  const startVoiceInput = async () => {
+    if (isRecording) {
+      await stopVoiceInput()
+      return
+    }
+
+    stopSpeaking()
+    setSpeechError('')
+
+    try {
+      const socket = createSpeechAsrSocket(config.baseUrl, {
+        apiKey: config.apiKey,
+        bearerToken: config.bearerToken
+      })
+      socket.binaryType = 'arraybuffer'
+
+      await new Promise<void>((resolve, reject) => {
+        socket.onopen = () => resolve()
+        socket.onerror = () => reject(new Error('语音识别连接失败。'))
+      })
+
+      socket.onmessage = (event) => {
+        if (typeof event.data !== 'string') {
+          return
+        }
+
+        const payload = JSON.parse(event.data) as {
+          type: string
+          text?: string
+          is_final?: boolean
+          message?: string
+        }
+
+        if (payload.type === 'transcript' && typeof payload.text === 'string') {
+          setQuestion(payload.text)
+          resizeTextarea(payload.text)
+          return
+        }
+
+        if (payload.type === 'error') {
+          setSpeechError(payload.message ?? '语音识别失败。')
+          void stopVoiceInput()
+        }
+      }
+
+      socket.onerror = () => {
+        setSpeechError('语音识别连接失败。')
+      }
+
+      socket.onclose = () => {
+        setIsRecording(false)
+      }
+
+      const recorder = await startPCMRecorder((chunk) => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(chunk)
+        }
+      })
+
+      recorderStopRef.current = recorder.stop
+      asrSocketRef.current = socket
+      setIsRecording(true)
+    } catch (error) {
+      setSpeechError(error instanceof Error ? error.message : '无法启动语音输入。')
+      setIsRecording(false)
+      asrSocketRef.current?.close()
+      asrSocketRef.current = null
+      recorderStopRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    stopSpeaking()
+  }, [currentSessionId])
+
   const submitQuestion = async (seedQuestion?: string) => {
+    if (isRecording) {
+      await stopVoiceInput()
+    }
+
     const content = (seedQuestion ?? question).trim()
     if (!content || isSubmitting) {
       return
@@ -449,6 +683,7 @@ export default function App() {
     setCurrentSessionId(sessionId)
     setQuestion('')
     setIsSubmitting(true)
+    setSpeechError('')
     setHoverPreview(null)
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
@@ -711,9 +946,12 @@ export default function App() {
               <MessageCard
                 key={message.id}
                 message={message}
+                isSpeaking={playingMessageId === message.id}
+                isSpeechLoading={speechLoadingMessageId === message.id}
                 onHoverReferenceStart={handleHoverReferenceStart}
                 onHoverReferenceEnd={handleHoverReferenceEnd}
                 onSelectReference={handleSelectReference}
+                onToggleSpeak={handleToggleSpeak}
               />
             ))
           )}
@@ -735,7 +973,16 @@ export default function App() {
             rows={1}
           />
           <div className="composer-footer">
+            {speechError ? <p className="composer-status composer-error">{speechError}</p> : <span />}
             <div className="composer-actions">
+              <button
+                type="button"
+                className={`secondary-action mic-action ${isRecording ? 'recording' : ''}`}
+                onClick={() => void startVoiceInput()}
+                disabled={isSubmitting}
+              >
+                {isRecording ? '停止收音' : '话筒输入'}
+              </button>
               {isSubmitting && (
                 <button
                   type="button"
