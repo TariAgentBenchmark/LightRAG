@@ -133,7 +133,9 @@ const useSettingsStoreBase = create<SettingsState>()(
         stream: true,
         history_turns: 0,
         user_prompt: '',
-        enable_rerank: true
+        enable_rerank: true,
+        use_conversation_history: false,
+        retrieval_language: 'zh'
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -238,7 +240,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -339,6 +341,12 @@ const useSettingsStoreBase = create<SettingsState>()(
           // Remove deprecated response_type parameter
           if (state.querySettings) {
             delete state.querySettings.response_type
+          }
+        }
+        if (version < 20) {
+          if (state.querySettings) {
+            state.querySettings.use_conversation_history = false
+            state.querySettings.retrieval_language = 'zh'
           }
         }
         return state

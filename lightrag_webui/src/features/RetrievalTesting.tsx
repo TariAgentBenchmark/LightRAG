@@ -13,7 +13,7 @@ import { EraserIcon, SendIcon, CopyIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
-import type { QueryMode } from '@/api/lightrag'
+import type { QueryMode, QueryReference } from '@/api/lightrag'
 
 // Helper function to generate unique IDs with browser compatibility
 const generateUniqueId = () => {
@@ -337,6 +337,21 @@ export default function RetrievalTesting() {
         }
       }
 
+      const updateAssistantReferences = (references: QueryReference[]) => {
+        assistantMessage.references = references
+
+        setMessages((prev) => {
+          const newMessages = [...prev]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.id === assistantMessage.id) {
+            Object.assign(lastMessage, {
+              references
+            })
+          }
+          return newMessages
+        })
+      }
+
       // Prepare query parameters
       const state = useSettingsStore.getState()
 
@@ -348,16 +363,16 @@ export default function RetrievalTesting() {
       // Determine the effective mode
       const effectiveMode = modeOverride || state.querySettings.mode
 
-      // Determine effective history turns with bypass override
-      const configuredHistoryTurns = state.querySettings.history_turns || 0
-      const effectiveHistoryTurns = (effectiveMode === 'bypass' && configuredHistoryTurns === 0)
-        ? 3
-        : configuredHistoryTurns
+      // Only carry previous turns when the user explicitly enables follow-up mode.
+      const effectiveHistoryTurns = state.querySettings.use_conversation_history
+        ? (effectiveMode === 'bypass' ? 3 : 2)
+        : 0
 
       const queryParams = {
         ...state.querySettings,
         query: actualQuery,
         response_type: 'Multiple Paragraphs',
+        use_conversation_history: effectiveHistoryTurns > 0,
         conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
             .filter((m) => m.isError !== true)
@@ -371,9 +386,14 @@ export default function RetrievalTesting() {
         // Run query
         if (state.querySettings.stream) {
           let errorMessage = ''
-          await queryTextStream(queryParams, updateAssistantMessage, (error) => {
-            errorMessage += error
-          })
+          await queryTextStream(
+            queryParams,
+            updateAssistantMessage,
+            updateAssistantReferences,
+            (error) => {
+              errorMessage += error
+            }
+          )
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -382,6 +402,9 @@ export default function RetrievalTesting() {
           }
         } else {
           const response = await queryText(queryParams)
+          if (response.references?.length) {
+            updateAssistantReferences(response.references)
+          }
           updateAssistantMessage(response.response)
         }
       } catch (err) {

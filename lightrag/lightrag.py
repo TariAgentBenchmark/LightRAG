@@ -89,7 +89,6 @@ from lightrag.namespace import NameSpace
 from lightrag.operate import (
     chunking_by_structure_priority,
     chunking_by_structure_priority_with_reranker,
-    chunking_by_token_size,
     extract_entities,
     merge_nodes_and_edges,
     kg_query,
@@ -2748,6 +2747,10 @@ class LightRAG:
             model_func=param.model_func,
             user_prompt=param.user_prompt,
             enable_rerank=param.enable_rerank,
+            use_conversation_history=param.use_conversation_history,
+            retrieval_language=param.retrieval_language,
+            retrieval_query=param.retrieval_query,
+            is_definition_query=param.is_definition_query,
         )
 
         query_result = None

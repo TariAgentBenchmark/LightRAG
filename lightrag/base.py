@@ -162,6 +162,18 @@ class QueryParam:
     Default is True to enable reranking when rerank model is available.
     """
 
+    use_conversation_history: bool = False
+    """If True, passes conversation_history to the LLM. Defaults to False to avoid unintended cross-turn carryover."""
+
+    retrieval_language: str = "zh"
+    """Language used for retrieval-oriented query rewriting and keyword extraction."""
+
+    retrieval_query: str | None = None
+    """Normalized retrieval query used internally for search. Defaults to None and is filled at runtime."""
+
+    is_definition_query: bool = False
+    """Marks concept/definition style questions so retrieval and prompting can stay definition-first."""
+
     include_references: bool = False
     """If True, includes reference list in the response for supported endpoints.
     This parameter controls whether the API response includes a references field

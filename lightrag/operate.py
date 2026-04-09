@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
@@ -6,7 +7,7 @@ import asyncio
 import json
 import json_repair
 import re
-from typing import Any, AsyncIterator, overload, Literal
+from typing import Any, AsyncIterator, Callable, overload, Literal
 from collections import Counter, defaultdict
 
 from lightrag.exceptions import (
@@ -74,6 +75,119 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
+
+
+_CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_DEFINITION_QUERY_RE = re.compile(
+    r"(是什么|什么意思|含义|定义|概念|如何理解|指的是|有何区别|区别是什么|是什么关系|定义是什么|"
+    r"\bwhat\s+is\b|\bdefine\b|\bdefinition\b|\bmeaning\b|\bmean\b|\bdifference\b|\bconcept\b)",
+    re.IGNORECASE,
+)
+
+
+def _contains_cjk(text: str) -> bool:
+    return bool(text and _CJK_CHAR_RE.search(text))
+
+
+QUERY_RESPONSE_PROMPT_VERSION = "2026-04-09-grounded-followups-v1"
+
+
+def _is_definition_query(query: str) -> bool:
+    return bool(query and _DEFINITION_QUERY_RE.search(query))
+
+
+def _get_effective_history_messages(query_param: QueryParam) -> list[dict[str, str]] | None:
+    if not query_param.use_conversation_history:
+        return None
+    return query_param.conversation_history or None
+
+
+def _build_additional_prompt_instructions(query_param: QueryParam) -> str:
+    instructions: list[str] = [
+        "Answer directly. Avoid self-referential subject expressions such as `我`、`本人`、`厚老师`、`厚音老师`, unless the user explicitly asks for speaker identity.",
+        "Keep the answer evidence-first. Every substantial factual sentence should have inline numeric citations.",
+        "If direct support is missing, say the material is insufficient instead of filling the gap with general knowledge.",
+        "Prefer neutral declarative sentences. Do not add speaker attribution or teaching persona wording unless the user explicitly asks for a viewpoint.",
+        "Do not add unsupported comparisons, conclusions, value judgments, extensions, or summaries that are not directly grounded in the retrieved material.",
+        "When the material supports several key points, cover the major supported points explicitly instead of compressing them into a looser paraphrase.",
+        "Prefer the source material's own terminology and distinctions. Do not rewrite core concepts into broader but less precise wording.",
+        "After the main answer, add exactly 3 short related follow-up questions in the same language as the user query. Keep them grounded in the answered material and do not introduce new unsupported topics.",
+    ]
+
+    if query_param.is_definition_query:
+        instructions.extend(
+            [
+                "Treat this as a definition-first question.",
+                "Start with the most directly supported definition.",
+                "Then list the directly supported key components or distinctions without omitting major supported points.",
+            ]
+        )
+
+    if (
+        query_param.retrieval_language.lower().startswith("zh")
+        and query_param.retrieval_query
+        and not _contains_cjk(query_param.retrieval_query)
+    ):
+        instructions.append(
+            "If key Chinese terms are central to the answer, keep them alongside translated wording."
+        )
+
+    if query_param.user_prompt and query_param.user_prompt.strip():
+        instructions.append(query_param.user_prompt.strip())
+
+    return "\n".join(f"- {instruction}" for instruction in instructions) if instructions else "n/a"
+
+
+async def _normalize_retrieval_query(
+    query: str,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+) -> str:
+    retrieval_language = (query_param.retrieval_language or "").lower()
+    if not query or not retrieval_language.startswith("zh") or _contains_cjk(query):
+        return query.strip()
+
+    use_model_func = query_param.model_func or global_config["llm_model_func"]
+    use_model_func = partial(use_model_func, _priority=5)
+
+    rewrite_prompt = PROMPTS["retrieval_query_rewrite"].format(query=query.strip())
+    rewritten_query, _ = await use_llm_func_with_cache(
+        rewrite_prompt,
+        use_model_func,
+        llm_response_cache=hashing_kv,
+        cache_type="query_rewrite",
+        max_tokens=128,
+    )
+    rewritten_query = remove_think_tags(rewritten_query).strip().strip('"').strip("'")
+
+    if not rewritten_query:
+        return query.strip()
+
+    logger.info("Normalized retrieval query to Chinese: %s", rewritten_query)
+    return rewritten_query
+
+
+def _prepare_effective_query_param(
+    query_param: QueryParam,
+    retrieval_query: str,
+) -> QueryParam:
+    effective_param = replace(query_param)
+    effective_param.retrieval_query = retrieval_query
+    effective_param.is_definition_query = _is_definition_query(
+        retrieval_query or query_param.retrieval_query or ""
+    )
+
+    if effective_param.is_definition_query:
+        effective_param.top_k = effective_param.top_k + min(
+            12, max(4, effective_param.top_k // 2)
+        )
+        effective_param.chunk_top_k = effective_param.chunk_top_k + min(
+            8, max(4, effective_param.chunk_top_k // 2)
+        )
+
+    return effective_param
+
 
 
 def _truncate_entity_identifier(
@@ -3670,8 +3784,15 @@ async def kg_query(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    hl_keywords, ll_keywords = await get_keywords_from_query(
+    retrieval_query = await _normalize_retrieval_query(
         query, query_param, global_config, hashing_kv
+    )
+    effective_query_param = _prepare_effective_query_param(
+        query_param, retrieval_query
+    )
+
+    hl_keywords, ll_keywords = await get_keywords_from_query(
+        retrieval_query, effective_query_param, global_config, hashing_kv
     )
 
     logger.debug(f"High-level keywords: {hl_keywords}")
@@ -3683,9 +3804,11 @@ async def kg_query(
     if hl_keywords == [] and query_param.mode in ["global", "hybrid", "mix"]:
         logger.warning("high_level_keywords is empty")
     if hl_keywords == [] and ll_keywords == []:
-        if len(query) < 50:
-            logger.warning(f"Forced low_level_keywords to origin query: {query}")
-            ll_keywords = [query]
+        if len(retrieval_query) < 50:
+            logger.warning(
+                "Forced low_level_keywords to retrieval query: %s", retrieval_query
+            )
+            ll_keywords = [retrieval_query]
         else:
             return QueryResult(content=PROMPTS["fail_response"])
 
@@ -3694,14 +3817,14 @@ async def kg_query(
 
     # Build query context (unified interface)
     context_result = await _build_query_context(
-        query,
+        retrieval_query,
         ll_keywords_str,
         hl_keywords_str,
         knowledge_graph_inst,
         entities_vdb,
         relationships_vdb,
         text_chunks_db,
-        query_param,
+        effective_query_param,
         chunks_vdb,
     )
 
@@ -3715,10 +3838,10 @@ async def kg_query(
             content=context_result.context, raw_data=context_result.raw_data
         )
 
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    user_prompt = _build_additional_prompt_instructions(effective_query_param)
     response_type = (
-        query_param.response_type
-        if query_param.response_type
+        effective_query_param.response_type
+        if effective_query_param.response_type
         else "Multiple Paragraphs"
     )
 
@@ -3745,22 +3868,26 @@ async def kg_query(
 
     # Handle cache
     args_hash = compute_args_hash(
-        query_param.mode,
+        QUERY_RESPONSE_PROMPT_VERSION,
+        effective_query_param.mode,
         query,
-        query_param.response_type,
-        query_param.top_k,
-        query_param.chunk_top_k,
-        query_param.max_entity_tokens,
-        query_param.max_relation_tokens,
-        query_param.max_total_tokens,
+        retrieval_query,
+        effective_query_param.response_type,
+        effective_query_param.top_k,
+        effective_query_param.chunk_top_k,
+        effective_query_param.max_entity_tokens,
+        effective_query_param.max_relation_tokens,
+        effective_query_param.max_total_tokens,
         hl_keywords_str,
         ll_keywords_str,
-        query_param.user_prompt or "",
-        query_param.enable_rerank,
+        effective_query_param.user_prompt or "",
+        effective_query_param.enable_rerank,
+        effective_query_param.use_conversation_history,
+        effective_query_param.is_definition_query,
     )
 
     cached_result = await handle_cache(
-        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
+        hashing_kv, args_hash, user_query, effective_query_param.mode, cache_type="query"
     )
 
     if cached_result is not None:
@@ -3770,27 +3897,32 @@ async def kg_query(
         )
         response = cached_response
     else:
+        history_messages = _get_effective_history_messages(effective_query_param)
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,
-            history_messages=query_param.conversation_history,
+            history_messages=history_messages,
             enable_cot=True,
-            stream=query_param.stream,
+            stream=effective_query_param.stream,
         )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
-                "mode": query_param.mode,
-                "response_type": query_param.response_type,
-                "top_k": query_param.top_k,
-                "chunk_top_k": query_param.chunk_top_k,
-                "max_entity_tokens": query_param.max_entity_tokens,
-                "max_relation_tokens": query_param.max_relation_tokens,
-                "max_total_tokens": query_param.max_total_tokens,
+                "mode": effective_query_param.mode,
+                "prompt_version": QUERY_RESPONSE_PROMPT_VERSION,
+                "response_type": effective_query_param.response_type,
+                "top_k": effective_query_param.top_k,
+                "chunk_top_k": effective_query_param.chunk_top_k,
+                "max_entity_tokens": effective_query_param.max_entity_tokens,
+                "max_relation_tokens": effective_query_param.max_relation_tokens,
+                "max_total_tokens": effective_query_param.max_total_tokens,
                 "hl_keywords": hl_keywords_str,
                 "ll_keywords": ll_keywords_str,
-                "user_prompt": query_param.user_prompt or "",
-                "enable_rerank": query_param.enable_rerank,
+                "user_prompt": effective_query_param.user_prompt or "",
+                "enable_rerank": effective_query_param.enable_rerank,
+                "use_conversation_history": effective_query_param.use_conversation_history,
+                "retrieval_query": retrieval_query,
+                "is_definition_query": effective_query_param.is_definition_query,
             }
             await save_to_cache(
                 hashing_kv,
@@ -3798,7 +3930,7 @@ async def kg_query(
                     args_hash=args_hash,
                     content=response,
                     prompt=query,
-                    mode=query_param.mode,
+                    mode=effective_query_param.mode,
                     cache_type="query",
                     queryparam=queryparam_dict,
                 ),
@@ -3806,6 +3938,7 @@ async def kg_query(
 
     # Return unified result based on actual response type
     if isinstance(response, str):
+        response = remove_think_tags(response).strip()
         # Non-streaming response (string)
         if len(response) > len(sys_prompt):
             response = (
@@ -3875,7 +4008,9 @@ async def extract_keywords_only(
     # 1. Build the examples
     examples = "\n".join(PROMPTS["keywords_extraction_examples"])
 
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
+    language = param.retrieval_language or global_config["addon_params"].get(
+        "language", DEFAULT_SUMMARY_LANGUAGE
+    )
 
     # 2. Handle cache if needed - add cache type for keywords
     args_hash = compute_args_hash(
@@ -4553,7 +4688,7 @@ async def _build_context_str(
     )
 
     kg_context_template = PROMPTS["kg_query_context"]
-    user_prompt = query_param.user_prompt if query_param.user_prompt else ""
+    user_prompt = _build_additional_prompt_instructions(query_param)
     response_type = (
         query_param.response_type
         if query_param.response_type
@@ -4789,6 +4924,12 @@ async def _build_query_context(
     raw_data["metadata"]["keywords"] = {
         "high_level": hl_keywords_list,
         "low_level": ll_keywords_list,
+    }
+    raw_data["metadata"]["query_analysis"] = {
+        "retrieval_query": query_param.retrieval_query or query,
+        "is_definition_query": query_param.is_definition_query,
+        "use_conversation_history": query_param.use_conversation_history,
+        "retrieval_language": query_param.retrieval_language,
     }
     raw_data["metadata"]["processing_info"] = {
         "total_entities_found": len(search_result.get("final_entities", [])),
@@ -5446,12 +5587,21 @@ async def naive_query(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
+    retrieval_query = await _normalize_retrieval_query(
+        query, query_param, global_config, hashing_kv
+    )
+    effective_query_param = _prepare_effective_query_param(
+        query_param, retrieval_query
+    )
+
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
         logger.error("Tokenizer not found in global configuration.")
         return QueryResult(content=PROMPTS["fail_response"])
 
-    chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
+    chunks = await _get_vector_context(
+        retrieval_query, chunks_vdb, effective_query_param, None
+    )
 
     if chunks is None or len(chunks) == 0:
         logger.info(
@@ -5461,16 +5611,16 @@ async def naive_query(
 
     # Calculate dynamic token limit for chunks
     max_total_tokens = getattr(
-        query_param,
+        effective_query_param,
         "max_total_tokens",
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
     # Calculate system prompt template tokens (excluding content_data)
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    user_prompt = _build_additional_prompt_instructions(effective_query_param)
     response_type = (
-        query_param.response_type
-        if query_param.response_type
+        effective_query_param.response_type
+        if effective_query_param.response_type
         else "Multiple Paragraphs"
     )
 
@@ -5500,9 +5650,9 @@ async def naive_query(
 
     # Process chunks using unified processing with dynamic token limit
     processed_chunks = await process_chunks_unified(
-        query=query,
+        query=retrieval_query,
         unique_chunks=chunks,
-        query_param=query_param,
+        query_param=effective_query_param,
         global_config=global_config,
         source_type="vector",
         chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
@@ -5530,6 +5680,12 @@ async def naive_query(
     raw_data["metadata"]["keywords"] = {
         "high_level": [],  # naive mode has no keyword extraction
         "low_level": [],  # naive mode has no keyword extraction
+    }
+    raw_data["metadata"]["query_analysis"] = {
+        "retrieval_query": effective_query_param.retrieval_query or retrieval_query,
+        "is_definition_query": effective_query_param.is_definition_query,
+        "use_conversation_history": effective_query_param.use_conversation_history,
+        "retrieval_language": effective_query_param.retrieval_language,
     }
     raw_data["metadata"]["processing_info"] = {
         "total_chunks_found": len(chunks),
@@ -5565,7 +5721,7 @@ async def naive_query(
         return QueryResult(content=context_content, raw_data=raw_data)
 
     sys_prompt = sys_prompt_template.format(
-        response_type=query_param.response_type,
+        response_type=effective_query_param.response_type,
         user_prompt=user_prompt,
         content_data=context_content,
     )
@@ -5578,19 +5734,23 @@ async def naive_query(
 
     # Handle cache
     args_hash = compute_args_hash(
-        query_param.mode,
+        QUERY_RESPONSE_PROMPT_VERSION,
+        effective_query_param.mode,
         query,
-        query_param.response_type,
-        query_param.top_k,
-        query_param.chunk_top_k,
-        query_param.max_entity_tokens,
-        query_param.max_relation_tokens,
-        query_param.max_total_tokens,
-        query_param.user_prompt or "",
-        query_param.enable_rerank,
+        retrieval_query,
+        effective_query_param.response_type,
+        effective_query_param.top_k,
+        effective_query_param.chunk_top_k,
+        effective_query_param.max_entity_tokens,
+        effective_query_param.max_relation_tokens,
+        effective_query_param.max_total_tokens,
+        effective_query_param.user_prompt or "",
+        effective_query_param.enable_rerank,
+        effective_query_param.use_conversation_history,
+        effective_query_param.is_definition_query,
     )
     cached_result = await handle_cache(
-        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
+        hashing_kv, args_hash, user_query, effective_query_param.mode, cache_type="query"
     )
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
@@ -5599,25 +5759,30 @@ async def naive_query(
         )
         response = cached_response
     else:
+        history_messages = _get_effective_history_messages(effective_query_param)
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,
-            history_messages=query_param.conversation_history,
+            history_messages=history_messages,
             enable_cot=True,
-            stream=query_param.stream,
+            stream=effective_query_param.stream,
         )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
-                "mode": query_param.mode,
-                "response_type": query_param.response_type,
-                "top_k": query_param.top_k,
-                "chunk_top_k": query_param.chunk_top_k,
-                "max_entity_tokens": query_param.max_entity_tokens,
-                "max_relation_tokens": query_param.max_relation_tokens,
-                "max_total_tokens": query_param.max_total_tokens,
-                "user_prompt": query_param.user_prompt or "",
-                "enable_rerank": query_param.enable_rerank,
+                "mode": effective_query_param.mode,
+                "prompt_version": QUERY_RESPONSE_PROMPT_VERSION,
+                "response_type": effective_query_param.response_type,
+                "top_k": effective_query_param.top_k,
+                "chunk_top_k": effective_query_param.chunk_top_k,
+                "max_entity_tokens": effective_query_param.max_entity_tokens,
+                "max_relation_tokens": effective_query_param.max_relation_tokens,
+                "max_total_tokens": effective_query_param.max_total_tokens,
+                "user_prompt": effective_query_param.user_prompt or "",
+                "enable_rerank": effective_query_param.enable_rerank,
+                "use_conversation_history": effective_query_param.use_conversation_history,
+                "retrieval_query": retrieval_query,
+                "is_definition_query": effective_query_param.is_definition_query,
             }
             await save_to_cache(
                 hashing_kv,
@@ -5625,7 +5790,7 @@ async def naive_query(
                     args_hash=args_hash,
                     content=response,
                     prompt=query,
-                    mode=query_param.mode,
+                    mode=effective_query_param.mode,
                     cache_type="query",
                     queryparam=queryparam_dict,
                 ),
@@ -5633,6 +5798,7 @@ async def naive_query(
 
     # Return unified result based on actual response type
     if isinstance(response, str):
+        response = remove_think_tags(response).strip()
         # Non-streaming response (string)
         if len(response) > len(sys_prompt):
             response = (

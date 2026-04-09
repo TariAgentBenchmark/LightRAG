@@ -20,6 +20,74 @@ _REFERENCE_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 _REFERENCE_ENTRY_RE = re.compile(r"^(\s*(?:[-*+]\s*)?)\[(\d+)\](\s+.*)?$")
+_STRUCTURE_HEADING_RE = re.compile(
+    r"^\s*("
+    r"第[一二三四五六七八九十百零〇\d]+[章节篇讲回部分]"
+    r"|[一二三四五六七八九十百零〇]+[、.．]"
+    r"|\d+[、.．)]"
+    r"|[（(][一二三四五六七八九十百零〇\d]+[）)]"
+    r"|问[:：]"
+    r"|答[:：]"
+    r"|Q[:：]"
+    r"|A[:：]"
+    r"|【[^】]+】"
+    r")"
+)
+
+
+def _build_chunk_index_label(chunk_order_indices: list[int]) -> str | None:
+    if not chunk_order_indices:
+        return None
+
+    ordered_indices = sorted(set(index for index in chunk_order_indices if isinstance(index, int)))
+    if not ordered_indices:
+        return None
+
+    display_indices = [index + 1 for index in ordered_indices]
+    if len(display_indices) == 1:
+        return f"片段 #{display_indices[0]}"
+
+    if display_indices[-1] - display_indices[0] + 1 == len(display_indices):
+        return f"片段 #{display_indices[0]}-#{display_indices[-1]}"
+
+    preview_indices = "、".join(str(index) for index in display_indices[:3])
+    suffix = " 等" if len(display_indices) > 3 else ""
+    return f"片段 #{preview_indices}{suffix}"
+
+
+def _extract_structural_heading(content: str) -> str | None:
+    if not content:
+        return None
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _STRUCTURE_HEADING_RE.match(line):
+            return line[:80]
+
+    return None
+
+
+def _build_reference_preview(content: str, max_chars: int = 140) -> str | None:
+    if not content:
+        return None
+
+    normalized = re.sub(r"\s+", " ", content).strip()
+    if not normalized:
+        return None
+    if len(normalized) <= max_chars:
+        return normalized
+    return f"{normalized[:max_chars].rstrip()}..."
+
+
+def _build_reference_location_label(
+    chunk_order_indices: list[int], heading: str | None
+) -> str | None:
+    chunk_label = _build_chunk_index_label(chunk_order_indices)
+    if heading and chunk_label:
+        return f"{chunk_label} · {heading}"
+    return heading or chunk_label
 
 
 def _sanitize_inline_citations(text: str, valid_reference_ids: set[str]) -> str:
@@ -217,6 +285,11 @@ class QueryRequest(BaseModel):
         description="History messages are only sent to LLM for context, not used for retrieval. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
+    use_conversation_history: Optional[bool] = Field(
+        default=None,
+        description="If True, explicitly allows the current turn to use conversation_history during generation. Default is False.",
+    )
+
     user_prompt: Optional[str] = Field(
         default=None,
         description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
@@ -225,6 +298,12 @@ class QueryRequest(BaseModel):
     enable_rerank: Optional[bool] = Field(
         default=None,
         description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
+    )
+
+    retrieval_language: Optional[str] = Field(
+        default=None,
+        min_length=2,
+        description="Language used for retrieval-oriented query normalization and keyword extraction. Default is zh.",
     )
 
     include_references: Optional[bool] = Field(
@@ -288,6 +367,22 @@ class ReferenceItem(BaseModel):
         default=None,
         description="Entity terms associated with this reference (optional, may include entity names and related graph nodes)",
     )
+    chunk_order_indices: Optional[List[int]] = Field(
+        default=None,
+        description="Sorted chunk order indices associated with this reference",
+    )
+    location_label: Optional[str] = Field(
+        default=None,
+        description="Human-readable chunk location label for citation display",
+    )
+    preview: Optional[str] = Field(
+        default=None,
+        description="Short preview text built from the first referenced chunk",
+    )
+    matched_terms: Optional[List[str]] = Field(
+        default=None,
+        description="Display-oriented matched terms for this reference; currently mirrors entity_terms",
+    )
 
 
 class QueryResponse(BaseModel):
@@ -338,12 +433,32 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         entities = data.get("entities", [])
         relationships = data.get("relationships", [])
 
-        ref_id_to_content: Dict[str, List[str]] = {}
-        for chunk in chunks:
-            ref_id = chunk.get("reference_id", "")
-            content = chunk.get("content", "")
-            if ref_id and content:
-                ref_id_to_content.setdefault(ref_id, []).append(content)
+        def normalize_chunk_order_index(value: Any) -> Optional[int]:
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.isdigit():
+                    return int(stripped)
+            return None
+
+        ref_id_to_chunks: Dict[str, List[Dict[str, Any]]] = {}
+        for position, chunk in enumerate(chunks):
+            ref_id = str(chunk.get("reference_id", "")).strip()
+            if not ref_id:
+                continue
+
+            ref_id_to_chunks.setdefault(ref_id, []).append(
+                {
+                    "content": chunk.get("content", ""),
+                    "chunk_order_index": normalize_chunk_order_index(
+                        chunk.get("chunk_order_index")
+                    ),
+                    "position": position,
+                }
+            )
 
         ref_id_to_entity_terms: Dict[str, List[str]] = {}
 
@@ -368,11 +483,49 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         enriched_references = []
         for ref in references:
             ref_copy = ref.copy()
-            ref_id = ref.get("reference_id", "")
-            if include_chunk_content and ref_id in ref_id_to_content:
-                ref_copy["content"] = ref_id_to_content[ref_id]
+            ref_id = str(ref.get("reference_id", "")).strip()
+            ref_chunks = ref_id_to_chunks.get(ref_id, [])
+
+            if ref_chunks:
+                sorted_ref_chunks = sorted(
+                    ref_chunks,
+                    key=lambda chunk: (
+                        chunk["chunk_order_index"] is None,
+                        chunk["chunk_order_index"]
+                        if chunk["chunk_order_index"] is not None
+                        else chunk["position"],
+                        chunk["position"],
+                    ),
+                )
+                chunk_contents = [
+                    str(chunk.get("content", ""))
+                    for chunk in sorted_ref_chunks
+                    if str(chunk.get("content", "")).strip()
+                ]
+                chunk_order_indices = [
+                    chunk["chunk_order_index"]
+                    for chunk in sorted_ref_chunks
+                    if isinstance(chunk.get("chunk_order_index"), int)
+                ]
+                first_chunk_content = chunk_contents[0] if chunk_contents else ""
+                heading = _extract_structural_heading(first_chunk_content)
+
+                if include_chunk_content and chunk_contents:
+                    ref_copy["content"] = chunk_contents
+                if chunk_order_indices:
+                    ref_copy["chunk_order_indices"] = sorted(set(chunk_order_indices))
+
+                location_label = _build_reference_location_label(chunk_order_indices, heading)
+                preview = _build_reference_preview(first_chunk_content)
+                if location_label:
+                    ref_copy["location_label"] = location_label
+                if preview:
+                    ref_copy["preview"] = preview
+
             if ref_id in ref_id_to_entity_terms:
-                ref_copy["entity_terms"] = ref_id_to_entity_terms[ref_id]
+                matched_terms = ref_id_to_entity_terms[ref_id]
+                ref_copy["entity_terms"] = matched_terms
+                ref_copy["matched_terms"] = matched_terms
             enriched_references.append(ref_copy)
 
         return enriched_references

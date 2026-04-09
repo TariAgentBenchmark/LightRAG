@@ -3308,6 +3308,7 @@ def convert_to_user_format(
             "content": chunk.get("content", ""),
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
+            "chunk_order_index": chunk.get("chunk_order_index"),
         }
         formatted_chunks.append(chunk_data)
 

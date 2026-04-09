@@ -44,7 +44,8 @@ export default function QuerySettings() {
     chunk_top_k: 20,
     max_entity_tokens: 6000,
     max_relation_tokens: 8000,
-    max_total_tokens: 30000
+    max_total_tokens: 30000,
+    use_conversation_history: false
   }), [])
 
   const handleReset = useCallback((key: keyof typeof defaultValues) => {
@@ -354,6 +355,33 @@ export default function QuerySettings() {
 
             {/* Toggle Options */}
             <>
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="use_conversation_history" className="flex-1 ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.useConversationHistory')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.useConversationHistoryTooltip')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="use_conversation_history"
+                  checked={querySettings.use_conversation_history}
+                  onCheckedChange={(checked) => handleChange('use_conversation_history', checked)}
+                />
+              </div>
+
+              <div className="px-1 text-[11px] text-muted-foreground">
+                {querySettings.use_conversation_history
+                  ? t('retrievePanel.querySettings.useConversationHistoryEnabledHint')
+                  : t('retrievePanel.querySettings.useConversationHistoryDisabledHint')}
+              </div>
+
               <div className="flex items-center gap-2">
                 <TooltipProvider>
                   <Tooltip>

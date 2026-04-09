@@ -75,6 +75,7 @@ export const ChatMessage = ({
   const finalDisplayContent = message.role === 'user'
     ? message.content
     : (displayContent !== undefined ? displayContent : (message.content || ''))
+  const references = message.references ?? []
 
   // Load KaTeX rehype plugin dynamically
   // Note: KaTeX extensions (mhchem, copy-tex) are imported statically in main.tsx
@@ -257,6 +258,58 @@ export const ChatMessage = ({
             >
               {finalDisplayContent}
             </ReactMarkdown>
+          </div>
+        </div>
+      )}
+      {message.role === 'assistant' && references.length > 0 && (
+        <div className="mt-3 border-t border-border/70 pt-3">
+          <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {t('retrievePanel.chatMessage.references', '引用依据')}
+          </div>
+          <div className="space-y-2">
+            {references.map((reference, index) => {
+              const fileName = reference.file_path.split('/').pop() || reference.file_path
+              const matchedTerms = (reference.matched_terms?.length
+                ? reference.matched_terms
+                : reference.entity_terms) ?? []
+
+              return (
+                <div
+                  key={`${message.id}-${reference.reference_id}-${index}`}
+                  className="rounded-md border border-border/70 bg-background/70 px-3 py-2 text-sm"
+                  title={reference.file_path}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 font-medium text-foreground">
+                      <span className="mr-2 text-muted-foreground">[{index + 1}]</span>
+                      <span className="break-all">{fileName}</span>
+                    </div>
+                    {reference.location_label && (
+                      <div className="shrink-0 text-xs text-muted-foreground">
+                        {reference.location_label}
+                      </div>
+                    )}
+                  </div>
+                  {reference.preview && (
+                    <div className="mt-1 text-sm leading-6 text-muted-foreground">
+                      {reference.preview}
+                    </div>
+                  )}
+                  {matchedTerms.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {matchedTerms.slice(0, 6).map((term) => (
+                        <span
+                          key={`${reference.reference_id}-${term}`}
+                          className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                        >
+                          {term}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
