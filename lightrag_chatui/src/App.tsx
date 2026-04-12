@@ -4,7 +4,12 @@ import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
 import { streamQuery } from './api/lightrag'
 import { createSpeechAsrSocket, synthesizeSpeech } from './api/speech'
-import { getPCMRecorderSupportError, startPCMRecorder } from './lib/pcmRecorder'
+import {
+  convertAudioFileToPCMChunks,
+  getAudioProcessingSupportError,
+  getPCMRecorderSupportError,
+  startPCMRecorder
+} from './lib/pcmRecorder'
 import { loadConfig, loadSessions, saveConfig, saveSessions } from './lib/storage'
 import { remarkCitations } from './lib/remarkCitations'
 import type {
@@ -328,6 +333,7 @@ export default function App() {
   const [question, setQuestion] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
+  const [isUploadingAudio, setIsUploadingAudio] = useState(false)
   const [speechError, setSpeechError] = useState('')
   const [speechLoadingMessageId, setSpeechLoadingMessageId] = useState<string | null>(null)
   const [playingMessageId, setPlayingMessageId] = useState<string | null>(null)
@@ -348,9 +354,11 @@ export default function App() {
   const audioUrlRef = useRef<string | null>(null)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const audioUploadInputRef = useRef<HTMLInputElement | null>(null)
   const hoverShowTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const hoverHideTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const voiceInputSupportError = getPCMRecorderSupportError()
+  const audioUploadSupportError = getAudioProcessingSupportError()
 
   useEffect(() => {
     saveConfig(config)
@@ -555,6 +563,89 @@ export default function App() {
     setIsRecording(false)
   }
 
+  const transcribeAudioChunks = async (chunks: ArrayBuffer[]) => {
+    const socket = createSpeechAsrSocket(config.baseUrl, {
+      apiKey: config.apiKey,
+      bearerToken: config.bearerToken
+    })
+    socket.binaryType = 'arraybuffer'
+
+    return await new Promise<string>((resolve, reject) => {
+      let transcript = ''
+      let completed = false
+
+      const finish = (value?: string, error?: Error) => {
+        if (completed) {
+          return
+        }
+
+        completed = true
+        socket.close()
+
+        if (error) {
+          reject(error)
+          return
+        }
+
+        resolve((value ?? transcript).trim())
+      }
+
+      socket.onopen = () => {
+        // Wait for backend ready signal before sending audio.
+      }
+
+      socket.onmessage = (event) => {
+        if (typeof event.data !== 'string') {
+          return
+        }
+
+        const payload = JSON.parse(event.data) as {
+          type: string
+          text?: string
+          is_final?: boolean
+          message?: string
+        }
+
+        if (payload.type === 'ready') {
+          for (const chunk of chunks) {
+            socket.send(chunk)
+          }
+          socket.send(JSON.stringify({ type: 'end' }))
+          return
+        }
+
+        if (payload.type === 'transcript' && typeof payload.text === 'string') {
+          transcript = payload.text
+          if (payload.is_final) {
+            finish(transcript)
+          }
+          return
+        }
+
+        if (payload.type === 'error') {
+          finish(undefined, new Error(payload.message ?? '语音识别失败。'))
+        }
+      }
+
+      socket.onerror = () => {
+        finish(undefined, new Error('语音识别连接失败。'))
+      }
+
+      socket.onclose = () => {
+        if (completed) {
+          return
+        }
+
+        if (transcript.trim()) {
+          finish(transcript)
+          return
+        }
+
+        finish(undefined, new Error('未识别到有效语音内容。'))
+      }
+    })
+  }
+
   const startVoiceInput = async () => {
     if (isRecording) {
       await stopVoiceInput()
@@ -631,6 +722,44 @@ export default function App() {
       asrSocketRef.current?.close()
       asrSocketRef.current = null
       recorderStopRef.current = null
+    }
+  }
+
+  const handleAudioUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) {
+      return
+    }
+
+    if (audioUploadSupportError) {
+      setSpeechError(audioUploadSupportError)
+      return
+    }
+
+    if (isRecording) {
+      await stopVoiceInput()
+    }
+
+    stopSpeaking()
+    setSpeechError('')
+    setIsUploadingAudio(true)
+
+    try {
+      const chunks = await convertAudioFileToPCMChunks(file)
+      const transcript = await transcribeAudioChunks(chunks)
+
+      if (!transcript) {
+        throw new Error('未识别到有效语音内容。')
+      }
+
+      setQuestion(transcript)
+      resizeTextarea(transcript)
+    } catch (error) {
+      setSpeechError(error instanceof Error ? error.message : '音频识别失败。')
+    } finally {
+      setIsUploadingAudio(false)
     }
   }
 
@@ -984,11 +1113,31 @@ export default function App() {
           <div className="composer-footer">
             {speechError ? <p className="composer-status composer-error">{speechError}</p> : <span />}
             <div className="composer-actions">
+              <input
+                ref={audioUploadInputRef}
+                type="file"
+                accept="audio/*,.mp3,.wav,.m4a,.aac,.webm,.ogg"
+                style={{ display: 'none' }}
+                onChange={(event) => void handleAudioUpload(event)}
+              />
+              <button
+                type="button"
+                className="secondary-action"
+                onClick={() => audioUploadInputRef.current?.click()}
+                disabled={isSubmitting || isRecording || isUploadingAudio || Boolean(audioUploadSupportError)}
+                title={audioUploadSupportError ?? undefined}
+              >
+                {isUploadingAudio ? '识别中…' : '上传音频'}
+              </button>
               <button
                 type="button"
                 className={`secondary-action mic-action ${isRecording ? 'recording' : ''}`}
                 onClick={() => void startVoiceInput()}
-                disabled={isSubmitting || (!isRecording && Boolean(voiceInputSupportError))}
+                disabled={
+                  isSubmitting ||
+                  isUploadingAudio ||
+                  (!isRecording && Boolean(voiceInputSupportError))
+                }
                 title={voiceInputSupportError ?? undefined}
               >
                 {isRecording ? '停止收音' : '话筒输入'}

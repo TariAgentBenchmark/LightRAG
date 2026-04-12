@@ -2,6 +2,13 @@ type PCMRecorderHandle = {
   stop: () => Promise<void>
 }
 
+const getAudioContextCtor = () =>
+  typeof window === 'undefined'
+    ? null
+    : window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext
+
 const isLocalhostHostname = (hostname: string) =>
   hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
 
@@ -18,15 +25,90 @@ export const getPCMRecorderSupportError = () => {
     return '当前浏览器不支持麦克风采集，请使用最新版 Chrome、Edge 或 Safari。'
   }
 
-  const AudioContextCtor =
-    window.AudioContext ||
-    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  const AudioContextCtor = getAudioContextCtor()
 
   if (!AudioContextCtor) {
     return '当前浏览器不支持 AudioContext。'
   }
 
   return null
+}
+
+export const getAudioProcessingSupportError = () => {
+  if (typeof window === 'undefined') {
+    return '当前环境不支持音频处理。'
+  }
+
+  if (!getAudioContextCtor()) {
+    return '当前浏览器不支持音频解码，请使用最新版 Chrome、Edge 或 Safari。'
+  }
+
+  return null
+}
+
+const mixToMono = (audioBuffer: AudioBuffer) => {
+  const { numberOfChannels, length } = audioBuffer
+
+  if (numberOfChannels <= 1) {
+    return new Float32Array(audioBuffer.getChannelData(0))
+  }
+
+  const mono = new Float32Array(length)
+
+  for (let channelIndex = 0; channelIndex < numberOfChannels; channelIndex += 1) {
+    const channelData = audioBuffer.getChannelData(channelIndex)
+    for (let sampleIndex = 0; sampleIndex < length; sampleIndex += 1) {
+      mono[sampleIndex] += channelData[sampleIndex]
+    }
+  }
+
+  for (let sampleIndex = 0; sampleIndex < length; sampleIndex += 1) {
+    mono[sampleIndex] /= numberOfChannels
+  }
+
+  return mono
+}
+
+export const convertAudioFileToPCMChunks = async (
+  file: File,
+  targetSampleRate = 16000,
+  chunkByteLength = 6400
+) => {
+  const supportError = getAudioProcessingSupportError()
+  if (supportError) {
+    throw new Error(supportError)
+  }
+
+  const AudioContextCtor = getAudioContextCtor()
+  if (!AudioContextCtor) {
+    throw new Error('当前浏览器不支持音频解码。')
+  }
+
+  const fileBuffer = await file.arrayBuffer()
+  const audioContext = new AudioContextCtor()
+
+  try {
+    const decoded = await audioContext.decodeAudioData(fileBuffer.slice(0))
+    const mono = mixToMono(decoded)
+    const downsampled = downsampleBuffer(mono, decoded.sampleRate, targetSampleRate)
+    const pcm = floatTo16BitPCM(downsampled)
+    const bytes = new Uint8Array(pcm.buffer)
+    const chunks: ArrayBuffer[] = []
+
+    for (let offset = 0; offset < bytes.byteLength; offset += chunkByteLength) {
+      chunks.push(bytes.slice(offset, offset + chunkByteLength).buffer)
+    }
+
+    return chunks
+  } catch (error) {
+    throw new Error(
+      error instanceof Error
+        ? `音频解码失败：${error.message}`
+        : '音频解码失败，请尝试上传 mp3、wav 或 m4a 文件。'
+    )
+  } finally {
+    await audioContext.close()
+  }
 }
 
 const downsampleBuffer = (
@@ -93,8 +175,7 @@ export const startPCMRecorder = async (
   })
 
   const AudioContextCtor =
-    window.AudioContext ||
-    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    getAudioContextCtor()
 
   if (!AudioContextCtor) {
     throw new Error('当前浏览器不支持 AudioContext。')
