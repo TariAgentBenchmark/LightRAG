@@ -2,6 +2,33 @@ type PCMRecorderHandle = {
   stop: () => Promise<void>
 }
 
+const isLocalhostHostname = (hostname: string) =>
+  hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+
+export const getPCMRecorderSupportError = () => {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return '当前环境不支持语音输入。'
+  }
+
+  if (!window.isSecureContext && !isLocalhostHostname(window.location.hostname)) {
+    return '语音输入需要在 HTTPS 或 localhost 环境下使用。'
+  }
+
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+    return '当前浏览器不支持麦克风采集，请使用最新版 Chrome、Edge 或 Safari。'
+  }
+
+  const AudioContextCtor =
+    window.AudioContext ||
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+
+  if (!AudioContextCtor) {
+    return '当前浏览器不支持 AudioContext。'
+  }
+
+  return null
+}
+
 const downsampleBuffer = (
   input: Float32Array,
   inputSampleRate: number,
@@ -51,6 +78,11 @@ export const startPCMRecorder = async (
   onChunk: (chunk: ArrayBuffer) => void,
   targetSampleRate = 16000
 ): Promise<PCMRecorderHandle> => {
+  const supportError = getPCMRecorderSupportError()
+  if (supportError) {
+    throw new Error(supportError)
+  }
+
   const mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       channelCount: 1,

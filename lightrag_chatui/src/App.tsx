@@ -4,7 +4,7 @@ import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
 import { streamQuery } from './api/lightrag'
 import { createSpeechAsrSocket, synthesizeSpeech } from './api/speech'
-import { startPCMRecorder } from './lib/pcmRecorder'
+import { getPCMRecorderSupportError, startPCMRecorder } from './lib/pcmRecorder'
 import { loadConfig, loadSessions, saveConfig, saveSessions } from './lib/storage'
 import { remarkCitations } from './lib/remarkCitations'
 import type {
@@ -350,6 +350,7 @@ export default function App() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const hoverShowTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const hoverHideTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const voiceInputSupportError = getPCMRecorderSupportError()
 
   useEffect(() => {
     saveConfig(config)
@@ -563,8 +564,15 @@ export default function App() {
     stopSpeaking()
     setSpeechError('')
 
+    if (voiceInputSupportError) {
+      setSpeechError(voiceInputSupportError)
+      return
+    }
+
+    let socket: WebSocket | null = null
+
     try {
-      const socket = createSpeechAsrSocket(config.baseUrl, {
+      socket = createSpeechAsrSocket(config.baseUrl, {
         apiKey: config.apiKey,
         bearerToken: config.bearerToken
       })
@@ -619,6 +627,7 @@ export default function App() {
     } catch (error) {
       setSpeechError(error instanceof Error ? error.message : '无法启动语音输入。')
       setIsRecording(false)
+      socket?.close()
       asrSocketRef.current?.close()
       asrSocketRef.current = null
       recorderStopRef.current = null
@@ -979,7 +988,8 @@ export default function App() {
                 type="button"
                 className={`secondary-action mic-action ${isRecording ? 'recording' : ''}`}
                 onClick={() => void startVoiceInput()}
-                disabled={isSubmitting}
+                disabled={isSubmitting || (!isRecording && Boolean(voiceInputSupportError))}
+                title={voiceInputSupportError ?? undefined}
               >
                 {isRecording ? '停止收音' : '话筒输入'}
               </button>

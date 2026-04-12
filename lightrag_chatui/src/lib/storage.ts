@@ -3,8 +3,16 @@ import type { AppConfig, ChatSession } from '../types/chat'
 const CONFIG_STORAGE_KEY = 'LIGHTRAG_CHATUI_CONFIG'
 const SESSION_STORAGE_KEY = 'LIGHTRAG_CHATUI_SESSIONS'
 
+const getDefaultBaseUrl = () => {
+  if (typeof window === 'undefined') {
+    return 'http://121.41.189.137/chat-api/'
+  }
+
+  return `${window.location.origin}/chat-api/`
+}
+
 export const defaultConfig: AppConfig = {
-  baseUrl: 'http://121.41.189.137/chat-api/',
+  baseUrl: getDefaultBaseUrl(),
   apiKey: '',
   bearerToken: '',
   mode: 'mix',
