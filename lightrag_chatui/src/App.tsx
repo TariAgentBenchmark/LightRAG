@@ -64,6 +64,61 @@ const toSpeakableText = (text: string) =>
 const ANSWER_DISCLAIMER =
   '以上AI解答仅作参考。最终要以厚音老师的本人的回答为准。'
 
+type AnswerSectionKey = 'body' | 'references' | 'followups'
+
+const matchAnswerSectionHeading = (line: string): AnswerSectionKey | null => {
+  const match = line.match(/^#{1,6}\s*(.+?)\s*$/)
+  if (!match) {
+    return null
+  }
+
+  const heading = match[1].trim().toLocaleLowerCase('zh-CN')
+
+  if (heading === 'references' || heading === '参考资料') {
+    return 'references'
+  }
+
+  if (heading === '延伸追问') {
+    return 'followups'
+  }
+
+  return null
+}
+
+const extractFollowupQuestions = (markdown: string) =>
+  markdown
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*+]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+    .filter(Boolean)
+
+const splitAnswerSections = (content: string) => {
+  const sections: Record<AnswerSectionKey, string[]> = {
+    body: [],
+    references: [],
+    followups: []
+  }
+
+  let currentSection: AnswerSectionKey = 'body'
+
+  for (const line of content.replace(/\r\n?/g, '\n').split('\n')) {
+    const matchedSection = matchAnswerSectionHeading(line)
+    if (matchedSection) {
+      currentSection = matchedSection
+      continue
+    }
+
+    sections[currentSection].push(line)
+  }
+
+  return {
+    body: sections.body.join('\n').trim(),
+    referencesMarkdown: sections.references.join('\n').trim(),
+    followupQuestions: extractFollowupQuestions(sections.followups.join('\n'))
+  }
+}
+
 const buildConversationHistory = (messages: ChatMessage[], historyTurns: number) => {
   const eligible = messages
     .filter((message) => !message.isStreaming && !message.error)
@@ -216,23 +271,31 @@ type MessageCardProps = {
   message: ChatMessage
   isSpeaking: boolean
   isSpeechLoading: boolean
+  isSubmitting: boolean
   onHoverReferenceStart: (referenceId: string, messageId: string, anchorRect: DOMRect) => void
   onHoverReferenceEnd: () => void
   onSelectReference: (referenceId: string, messageId: string) => void
   onToggleSpeak: (message: ChatMessage) => void
+  onAskFollowup: (question: string) => void
 }
 
 const MessageCard = ({
   message,
   isSpeaking,
   isSpeechLoading,
+  isSubmitting,
   onHoverReferenceStart,
   onHoverReferenceEnd,
   onSelectReference,
-  onToggleSpeak
+  onToggleSpeak,
+  onAskFollowup
 }: MessageCardProps) => {
   const displayContent =
     message.role === 'assistant' ? stripKnownFileExtensions(message.content) : message.content
+  const structuredAnswer =
+    message.role === 'assistant' && !message.isStreaming && !message.error
+      ? splitAnswerSections(displayContent)
+      : null
 
   const markdownComponents = useMemo(
     () => ({
@@ -272,6 +335,10 @@ const MessageCard = ({
     !message.error &&
     displayContent.trim().length > 0
 
+  const answerBody = structuredAnswer?.body || displayContent
+  const referencesMarkdown = structuredAnswer?.referencesMarkdown ?? ''
+  const followupQuestions = structuredAnswer?.followupQuestions ?? []
+
   return (
     <article className={`message ${message.role === 'user' ? 'user' : 'assistant'}`}>
       <div className="message-meta">
@@ -301,8 +368,38 @@ const MessageCard = ({
               rehypePlugins={[rehypeRaw]}
               components={markdownComponents}
             >
-              {displayContent || (message.isStreaming ? '请稍候...' : '')}
+              {answerBody || (message.isStreaming ? '请稍候...' : '')}
             </ReactMarkdown>
+            {referencesMarkdown && (
+              <section className="message-section">
+                <h3 className="message-section-title">References</h3>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkCitations]}
+                  rehypePlugins={[rehypeRaw]}
+                  components={markdownComponents}
+                >
+                  {referencesMarkdown}
+                </ReactMarkdown>
+              </section>
+            )}
+            {followupQuestions.length > 0 && (
+              <section className="message-section followup-section">
+                <h3 className="message-section-title">延伸追问</h3>
+                <div className="followup-list">
+                  {followupQuestions.map((followupQuestion) => (
+                    <button
+                      key={`${message.id}-${followupQuestion}`}
+                      type="button"
+                      className="followup-button"
+                      onClick={() => onAskFollowup(followupQuestion)}
+                      disabled={isSubmitting}
+                    >
+                      {followupQuestion}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
             {shouldShowDisclaimer && (
               <p className="answer-disclaimer">{ANSWER_DISCLAIMER}</p>
             )}
@@ -1086,10 +1183,12 @@ export default function App() {
                 message={message}
                 isSpeaking={playingMessageId === message.id}
                 isSpeechLoading={speechLoadingMessageId === message.id}
+                isSubmitting={isSubmitting}
                 onHoverReferenceStart={handleHoverReferenceStart}
                 onHoverReferenceEnd={handleHoverReferenceEnd}
                 onSelectReference={handleSelectReference}
                 onToggleSpeak={handleToggleSpeak}
+                onAskFollowup={(followupQuestion) => void submitQuestion(followupQuestion)}
               />
             ))
           )}
