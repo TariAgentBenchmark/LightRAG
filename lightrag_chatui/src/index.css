@@ -467,6 +467,9 @@ button {
 }
 
 .message-audio-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   padding: 0.28rem 0.7rem;
   border: 1px solid rgba(35, 66, 60, 0.12);
   border-radius: 999px;
@@ -814,6 +817,18 @@ button {
   font-family: "Iowan Old Style", "Songti SC", "STSong", serif;
 }
 
+.reference-preview-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reference-preview-header .message-audio-button {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
 .floating-reference-content {
   display: grid;
   gap: 12px;
@@ -928,6 +943,12 @@ button {
 
 .sheet-header .entity-terms {
   margin-top: 8px;
+}
+
+.sheet-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .sheet-close {

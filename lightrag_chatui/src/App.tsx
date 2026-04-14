@@ -61,6 +61,17 @@ const toSpeakableText = (text: string) =>
     .replace(/\s{2,}/g, ' ')
     .trim()
 
+const referenceSpeakableText = (reference: ReferenceItem) => {
+  const title = summarizePath(reference.file_path)
+  const snippets = (reference.content ?? [])
+    .flatMap((snippet) => normalizeSnippet(snippet))
+    .filter(Boolean)
+
+  return toSpeakableText(
+    [title ? `参考材料 ${title}` : '', snippets.join(' ')].filter(Boolean).join('。 ')
+  )
+}
+
 const ANSWER_DISCLAIMER =
   '以上AI解答仅作参考。最终要以厚音老师的本人的回答为准。'
 
@@ -432,8 +443,8 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false)
   const [isUploadingAudio, setIsUploadingAudio] = useState(false)
   const [speechError, setSpeechError] = useState('')
-  const [speechLoadingMessageId, setSpeechLoadingMessageId] = useState<string | null>(null)
-  const [playingMessageId, setPlayingMessageId] = useState<string | null>(null)
+  const [speechLoadingTarget, setSpeechLoadingTarget] = useState<string | null>(null)
+  const [playingAudioTarget, setPlayingAudioTarget] = useState<string | null>(null)
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
   const [touchReference, setTouchReference] = useState<{
     messageId: string
@@ -570,14 +581,15 @@ export default function App() {
       URL.revokeObjectURL(audioUrlRef.current)
       audioUrlRef.current = null
     }
-    setPlayingMessageId(null)
-    setSpeechLoadingMessageId(null)
+    setPlayingAudioTarget(null)
+    setSpeechLoadingTarget(null)
     setIsRecording(false)
     setSpeechError('')
     setCurrentSessionId(null)
     setQuestion('')
     setIsSubmitting(false)
     setHoverPreview(null)
+    setTouchReference(null)
     setMobileDrawerOpen(false)
   }
 
@@ -592,24 +604,28 @@ export default function App() {
       audioUrlRef.current = null
     }
 
-    setPlayingMessageId(null)
-    setSpeechLoadingMessageId(null)
+    setPlayingAudioTarget(null)
+    setSpeechLoadingTarget(null)
   }
 
-  const handleToggleSpeak = async (message: ChatMessage) => {
-    if (playingMessageId === message.id) {
+  const playSpeechText = async (
+    target: string,
+    text: string,
+    emptyMessage: string
+  ) => {
+    if (playingAudioTarget === target) {
       stopSpeaking()
       return
     }
 
     stopSpeaking()
     setSpeechError('')
-    setSpeechLoadingMessageId(message.id)
+    setSpeechLoadingTarget(target)
 
     try {
-      const speakableText = toSpeakableText(message.content)
+      const speakableText = toSpeakableText(text)
       if (!speakableText) {
-        throw new Error('当前回答没有可朗读的内容。')
+        throw new Error(emptyMessage)
       }
 
       const blob = await synthesizeSpeech(config.baseUrl, speakableText, {
@@ -621,7 +637,7 @@ export default function App() {
       const audio = new Audio(audioUrl)
       audioRef.current = audio
       audioUrlRef.current = audioUrl
-      setPlayingMessageId(message.id)
+      setPlayingAudioTarget(target)
 
       audio.onended = () => {
         stopSpeaking()
@@ -636,8 +652,27 @@ export default function App() {
       setSpeechError(error instanceof Error ? error.message : '语音合成失败。')
       stopSpeaking()
     } finally {
-      setSpeechLoadingMessageId((current) => (current === message.id ? null : current))
+      setSpeechLoadingTarget((current) => (current === target ? null : current))
     }
+  }
+
+  const handleToggleSpeak = async (message: ChatMessage) => {
+    await playSpeechText(
+      `message:${message.id}`,
+      message.content,
+      '当前回答没有可朗读的内容。'
+    )
+  }
+
+  const handleToggleReferenceSpeak = async (
+    messageId: string,
+    reference: ReferenceItem
+  ) => {
+    await playSpeechText(
+      `reference:${messageId}:${reference.reference_id}`,
+      referenceSpeakableText(reference),
+      '当前引用没有可朗读的内容。'
+    )
   }
 
   const stopVoiceInput = async () => {
@@ -1181,8 +1216,8 @@ export default function App() {
               <MessageCard
                 key={message.id}
                 message={message}
-                isSpeaking={playingMessageId === message.id}
-                isSpeechLoading={speechLoadingMessageId === message.id}
+                isSpeaking={playingAudioTarget === `message:${message.id}`}
+                isSpeechLoading={speechLoadingTarget === `message:${message.id}`}
                 isSubmitting={isSubmitting}
                 onHoverReferenceStart={handleHoverReferenceStart}
                 onHoverReferenceEnd={handleHoverReferenceEnd}
@@ -1271,8 +1306,29 @@ export default function App() {
           onMouseEnter={clearHoverHideTimer}
           onMouseLeave={handleHoverReferenceEnd}
         >
-          <p className="reference-badge">[{hoverReference.reference_id}]</p>
-          <h4>{summarizePath(hoverReference.file_path)}</h4>
+          <div className="reference-preview-header">
+            <div>
+              <p className="reference-badge">[{hoverReference.reference_id}]</p>
+              <h4>{summarizePath(hoverReference.file_path)}</h4>
+            </div>
+            <button
+              type="button"
+              className={`message-audio-button ${playingAudioTarget === `reference:${hoverMessage.id}:${hoverReference.reference_id}` ? 'active' : ''}`}
+              onClick={() => void handleToggleReferenceSpeak(hoverMessage.id, hoverReference)}
+              disabled={
+                speechLoadingTarget === `reference:${hoverMessage.id}:${hoverReference.reference_id}` &&
+                playingAudioTarget !== `reference:${hoverMessage.id}:${hoverReference.reference_id}`
+              }
+            >
+              <span aria-hidden="true">📢</span>
+              {speechLoadingTarget === `reference:${hoverMessage.id}:${hoverReference.reference_id}` &&
+              playingAudioTarget !== `reference:${hoverMessage.id}:${hoverReference.reference_id}`
+                ? '朗读准备中…'
+                : playingAudioTarget === `reference:${hoverMessage.id}:${hoverReference.reference_id}`
+                  ? '停止朗读'
+                  : '朗读'}
+            </button>
+          </div>
           {normalizeEntityTerms(hoverReference.entity_terms).length > 0 && (
             <div className="entity-terms">
               {normalizeEntityTerms(hoverReference.entity_terms).map((term) => (
@@ -1305,17 +1361,36 @@ export default function App() {
                 <p className="reference-badge">[{touchMessageReference.reference_id}]</p>
                 <h3>{summarizePath(touchMessageReference.file_path)}</h3>
               </div>
-              <button
-                type="button"
-                className="sheet-close"
-                onClick={() => setTouchReference(null)}
-                aria-label="关闭"
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+              <div className="sheet-actions">
+                <button
+                  type="button"
+                  className={`message-audio-button ${playingAudioTarget === `reference:${touchMessage.id}:${touchMessageReference.reference_id}` ? 'active' : ''}`}
+                  onClick={() => void handleToggleReferenceSpeak(touchMessage.id, touchMessageReference)}
+                  disabled={
+                    speechLoadingTarget === `reference:${touchMessage.id}:${touchMessageReference.reference_id}` &&
+                    playingAudioTarget !== `reference:${touchMessage.id}:${touchMessageReference.reference_id}`
+                  }
+                >
+                  <span aria-hidden="true">📢</span>
+                  {speechLoadingTarget === `reference:${touchMessage.id}:${touchMessageReference.reference_id}` &&
+                  playingAudioTarget !== `reference:${touchMessage.id}:${touchMessageReference.reference_id}`
+                    ? '朗读准备中…'
+                    : playingAudioTarget === `reference:${touchMessage.id}:${touchMessageReference.reference_id}`
+                      ? '停止朗读'
+                      : '朗读'}
+                </button>
+                <button
+                  type="button"
+                  className="sheet-close"
+                  onClick={() => setTouchReference(null)}
+                  aria-label="关闭"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
             </div>
             {normalizeEntityTerms(touchMessageReference.entity_terms).length > 0 && (
               <div className="entity-terms">
