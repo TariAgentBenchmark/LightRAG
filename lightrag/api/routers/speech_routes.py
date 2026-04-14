@@ -33,6 +33,9 @@ class SpeechProviderConfig(BaseModel):
     asr_channels: int = 1
     tts_audio_format: str = "mp3"
     tts_sample_rate: int = 24000
+    tts_speed_ratio: float = 1.0
+    tts_volume_ratio: float = 1.0
+    tts_pitch_ratio: float = 1.0
 
 
 class SpeechStatusResponse(BaseModel):
@@ -55,6 +58,15 @@ class TTSRequest(BaseModel):
     )
     sample_rate: Optional[int] = Field(
         default=None, description="Optional override output sample rate"
+    )
+    speed_ratio: Optional[float] = Field(
+        default=None, description="Optional override speech speed ratio"
+    )
+    volume_ratio: Optional[float] = Field(
+        default=None, description="Optional override speech volume ratio"
+    )
+    pitch_ratio: Optional[float] = Field(
+        default=None, description="Optional override speech pitch ratio"
     )
 
 
@@ -82,6 +94,9 @@ def _get_provider_config() -> SpeechProviderConfig:
         asr_channels=config.asr_channels,
         tts_audio_format=config.tts_audio_format,
         tts_sample_rate=config.tts_sample_rate,
+        tts_speed_ratio=config.tts_speed_ratio,
+        tts_volume_ratio=config.tts_volume_ratio,
+        tts_pitch_ratio=config.tts_pitch_ratio,
     )
 
 
@@ -165,6 +180,9 @@ def create_speech_routes(api_key: Optional[str] = None):
             speaker_id=speaker_id,
             audio_format=request.audio_format,
             sample_rate=request.sample_rate,
+            speed_ratio=request.speed_ratio,
+            volume_ratio=request.volume_ratio,
+            pitch_ratio=request.pitch_ratio,
         )
         return Response(content=audio, media_type=media_type)
 

@@ -55,12 +55,29 @@ class VolcSpeechConfig:
     tts_url: str
     tts_audio_format: str
     tts_sample_rate: int
+    tts_speed_ratio: float
+    tts_volume_ratio: float
+    tts_pitch_ratio: float
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_float(value: str | None, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value.strip())
+    except ValueError:
+        logger.warning(
+            "Invalid float configuration value %r, falling back to %s",
+            value,
+            default,
+        )
+        return default
 
 
 def load_volc_speech_config() -> VolcSpeechConfig:
@@ -88,6 +105,9 @@ def load_volc_speech_config() -> VolcSpeechConfig:
         ).strip(),
         tts_audio_format=os.getenv("VOLC_TTS_AUDIO_FORMAT", "mp3").strip(),
         tts_sample_rate=int(os.getenv("VOLC_TTS_SAMPLE_RATE", "24000")),
+        tts_speed_ratio=_as_float(os.getenv("VOLC_TTS_SPEED_RATIO"), 1.0),
+        tts_volume_ratio=_as_float(os.getenv("VOLC_TTS_VOLUME_RATIO"), 1.0),
+        tts_pitch_ratio=_as_float(os.getenv("VOLC_TTS_PITCH_RATIO"), 1.0),
     )
 
 
@@ -294,6 +314,9 @@ async def synthesize_tts_audio(
     speaker_id: str,
     audio_format: Optional[str] = None,
     sample_rate: Optional[int] = None,
+    speed_ratio: Optional[float] = None,
+    volume_ratio: Optional[float] = None,
+    pitch_ratio: Optional[float] = None,
 ) -> tuple[bytes, str]:
     config = ensure_volc_speech_config(
         require_asr=False, require_tts=True, require_tts_speaker=False
@@ -308,6 +331,15 @@ async def synthesize_tts_audio(
             "audio_params": {
                 "format": audio_format or config.tts_audio_format,
                 "sample_rate": sample_rate or config.tts_sample_rate,
+                "speed_ratio": (
+                    speed_ratio if speed_ratio is not None else config.tts_speed_ratio
+                ),
+                "volume_ratio": (
+                    volume_ratio if volume_ratio is not None else config.tts_volume_ratio
+                ),
+                "pitch_ratio": (
+                    pitch_ratio if pitch_ratio is not None else config.tts_pitch_ratio
+                ),
             },
         },
     }
