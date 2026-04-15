@@ -365,6 +365,81 @@ const buildPrintableHtml = (question: string, message: ChatMessage) => {
 </html>`
 }
 
+const fallbackCopyText = (text: string) => {
+  const textarea = document.createElement('textarea')
+  const selection = window.getSelection()
+  const originalRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null
+
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '0'
+  textarea.style.left = '0'
+  textarea.style.opacity = '0'
+  textarea.style.pointerEvents = 'none'
+
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  textarea.setSelectionRange(0, textarea.value.length)
+
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch {
+    copied = false
+  }
+
+  document.body.removeChild(textarea)
+
+  if (selection) {
+    selection.removeAllRanges()
+    if (originalRange) {
+      selection.addRange(originalRange)
+    }
+  }
+
+  return copied
+}
+
+const copyTextWithFallback = async (text: string) => {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      return fallbackCopyText(text)
+    }
+  }
+
+  return fallbackCopyText(text)
+}
+
+const openManualCopyPrompt = (label: string, text: string) => {
+  window.prompt(label, text)
+}
+
+const isMobileBrowser = () =>
+  /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(
+    navigator.userAgent
+  )
+
+const downloadTextFile = (filename: string, content: string, mimeType: string) => {
+  const blob = new Blob([content], { type: `${mimeType};charset=utf-8` })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url)
+  }, 60_000)
+}
+
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 const normalizeEntityTerms = (terms?: string[]) =>
@@ -1332,12 +1407,20 @@ export default function App() {
   }
 
   const handleCopyAnswer = async (message: ChatMessage, relatedQuestion: string) => {
+    const exportText = buildAnswerExportText(relatedQuestion, message)
+
     try {
-      await navigator.clipboard.writeText(buildAnswerExportText(relatedQuestion, message))
-      showUiStatus('已复制这一问一答。')
+      const copied = await copyTextWithFallback(exportText)
+      if (copied) {
+        showUiStatus('已复制这一问一答。')
+        return
+      }
     } catch {
-      showUiStatus('复制失败，请检查浏览器权限。', 'error')
+      // Fall through to manual download/prompt fallback.
     }
+
+    downloadTextFile(`玄德问答-${Date.now()}.txt`, exportText, 'text/plain')
+    showUiStatus('浏览器复制受限，已下载文本文件。', 'success')
   }
 
   const handleShareAnswer = async (message: ChatMessage, relatedQuestion: string) => {
@@ -1353,7 +1436,7 @@ export default function App() {
     const shareText = buildAnswerExportText(relatedQuestion, message)
 
     try {
-      if (navigator.share) {
+      if (navigator.share && window.isSecureContext) {
         await navigator.share({
           title: summarizeQuestion(relatedQuestion || '玄德问答'),
           text: shareText,
@@ -1363,31 +1446,77 @@ export default function App() {
         return
       }
 
-      await navigator.clipboard.writeText(shareUrl.toString())
-      showUiStatus('分享链接已复制。')
+      const copied = await copyTextWithFallback(shareUrl.toString())
+      if (copied) {
+        showUiStatus('分享链接已复制。')
+        return
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         return
       }
-
-      showUiStatus('分享失败，请稍后再试。', 'error')
     }
+
+    openManualCopyPrompt('请复制以下分享链接', shareUrl.toString())
+    showUiStatus('已生成分享链接，请手动复制。')
   }
 
-  const handleDownloadPdf = (message: ChatMessage, relatedQuestion: string) => {
-    const printWindow = window.open('', '_blank', 'noopener,noreferrer')
-    if (!printWindow) {
-      showUiStatus('无法打开打印窗口，请检查浏览器拦截设置。', 'error')
+  const handleDownloadPdf = async (message: ChatMessage, relatedQuestion: string) => {
+    const filename = `玄德问答-${Date.now()}.html`
+    const printableHtml = buildPrintableHtml(relatedQuestion, message)
+    const htmlBlob = new Blob([printableHtml], { type: 'text/html;charset=utf-8' })
+    const htmlUrl = URL.createObjectURL(htmlBlob)
+    const exportWindow = window.open(htmlUrl, '_blank')
+
+    if (exportWindow) {
+      if (!isMobileBrowser()) {
+        window.setTimeout(() => {
+          exportWindow.focus()
+          exportWindow.print()
+        }, 400)
+        showUiStatus('已打开导出页，可打印为 PDF。')
+      } else {
+        showUiStatus('已打开导出页，请用浏览器菜单另存或分享。')
+      }
+
+      window.setTimeout(() => {
+        URL.revokeObjectURL(htmlUrl)
+      }, 60_000)
       return
     }
 
-    printWindow.document.write(buildPrintableHtml(relatedQuestion, message))
-    printWindow.document.close()
-    printWindow.focus()
-    window.setTimeout(() => {
-      printWindow.print()
-    }, 120)
-    showUiStatus('已打开打印窗口，可另存为 PDF。')
+    try {
+      const { jsPDF } = await import('jspdf')
+      const pdf = new jsPDF({
+        orientation: 'p',
+        unit: 'pt',
+        format: 'a4'
+      })
+      const lines = pdf.splitTextToSize(buildAnswerExportText(relatedQuestion, message), 520)
+      let cursorY = 56
+
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(12)
+
+      lines.forEach((line: string) => {
+        if (cursorY > 790) {
+          pdf.addPage()
+          cursorY = 56
+        }
+        pdf.text(line, 40, cursorY)
+        cursorY += 18
+      })
+
+      pdf.save(`玄德问答-${Date.now()}.pdf`)
+      showUiStatus('PDF 已开始下载。')
+      URL.revokeObjectURL(htmlUrl)
+      return
+    } catch {
+      URL.revokeObjectURL(htmlUrl)
+    }
+
+    downloadTextFile(filename, printableHtml, 'text/html')
+    showUiStatus('已下载导出页，请在浏览器中打开后另存为 PDF。')
   }
 
   const clearHoverHideTimer = () => {
