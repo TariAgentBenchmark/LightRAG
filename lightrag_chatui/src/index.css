@@ -410,6 +410,22 @@ button {
   margin: 8px 0 0;
 }
 
+.empty-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(900px, 100%);
+  margin-top: 20px;
+}
+
+.empty-prompt-header p {
+  margin: 0;
+  color: var(--gold);
+  font-size: 0.82rem;
+  letter-spacing: 0.12em;
+}
+
 .empty-prompt-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -531,6 +547,32 @@ button {
   line-height: 1.7;
 }
 
+.message-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.message-utility-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.78rem;
+  border: 1px solid rgba(35, 66, 60, 0.12);
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(255, 251, 244, 0.85);
+  font-size: 0.75rem;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.message-utility-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(35, 66, 60, 0.2);
+  background: rgba(248, 241, 229, 0.96);
+}
+
 .message-section {
   margin-top: 1.1rem;
   padding-top: 0.9rem;
@@ -640,6 +682,10 @@ button {
 
 .composer-error {
   color: var(--vermilion);
+}
+
+.composer-success {
+  color: var(--accent);
 }
 
 .composer-actions {
@@ -1129,6 +1175,12 @@ button {
     font-size: 0.72rem;
   }
 
+  .empty-prompt-header {
+    flex-direction: column;
+    align-items: flex-start;
+    margin-top: 16px;
+  }
+
   .empty-prompt-grid {
     grid-template-columns: 1fr;
     padding: 12px;
@@ -1164,7 +1216,12 @@ button {
   }
 
   .composer-actions {
+    flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .message-action-row {
+    gap: 8px;
   }
 
   .primary-action,

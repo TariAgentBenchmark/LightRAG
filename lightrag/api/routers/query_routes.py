@@ -90,10 +90,14 @@ def _build_reference_location_label(
     return heading or chunk_label
 
 
-def _sanitize_inline_citations(text: str, valid_reference_ids: set[str]) -> str:
-    """Remove inline citation markers that do not exist in the reference list."""
+def _normalize_reference_id(value: Any) -> str:
+    return str(value or "").strip()
 
-    if not text or not valid_reference_ids:
+
+def _sanitize_inline_citations(text: str, reference_id_map: dict[str, str]) -> str:
+    """Rewrite inline citation markers to the final ids and drop invalid ones."""
+
+    if not text or not reference_id_map:
         return _INLINE_CITATION_RE.sub("", text)
 
     def replace(match: re.Match[str]) -> str:
@@ -102,7 +106,14 @@ def _sanitize_inline_citations(text: str, valid_reference_ids: set[str]) -> str:
             for item in match.group(1).replace("^", "").split(",")
             if item.strip()
         ]
-        kept_ids = [ref_id for ref_id in normalized_ids if ref_id in valid_reference_ids]
+        kept_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for ref_id in normalized_ids:
+            remapped_id = reference_id_map.get(ref_id)
+            if not remapped_id or remapped_id in seen_ids:
+                continue
+            kept_ids.append(remapped_id)
+            seen_ids.add(remapped_id)
         if not kept_ids:
             return ""
         return "".join(f"[{ref_id}]" for ref_id in kept_ids)
@@ -114,9 +125,9 @@ def _sanitize_inline_citations(text: str, valid_reference_ids: set[str]) -> str:
 
 
 def _sanitize_line_with_reference_state(
-    line: str, in_references_section: bool, valid_reference_ids: set[str]
+    line: str, in_references_section: bool, reference_id_map: dict[str, str]
 ) -> tuple[str, bool]:
-    """Sanitize one line while tracking whether the output is inside the references section."""
+    """Rewrite citations on one line while tracking whether the output is inside the references section."""
 
     newline = ""
     if line.endswith("\r\n"):
@@ -138,19 +149,23 @@ def _sanitize_line_with_reference_state(
 
         ref_match = _REFERENCE_ENTRY_RE.match(content)
         if ref_match:
+            remapped_id = reference_id_map.get(ref_match.group(2))
+            if not remapped_id:
+                return "", True
+            prefix, _, suffix = ref_match.groups()
             return (
-                (f"{content}{newline}" if ref_match.group(2) in valid_reference_ids else ""),
+                f"{prefix}[{remapped_id}]{suffix or ''}{newline}",
                 True,
             )
 
         in_references_section = False
 
-    sanitized_content = _sanitize_inline_citations(content, valid_reference_ids)
+    sanitized_content = _sanitize_inline_citations(content, reference_id_map)
     return f"{sanitized_content}{newline}", in_references_section
 
 
-def sanitize_response_citations(content: str, valid_reference_ids: set[str]) -> str:
-    """Sanitize dangling citations in a complete response while preserving valid ones."""
+def sanitize_response_citations(content: str, reference_id_map: dict[str, str]) -> str:
+    """Rewrite dangling or non-sequential citations in a complete response."""
 
     if not content:
         return content
@@ -159,7 +174,7 @@ def sanitize_response_citations(content: str, valid_reference_ids: set[str]) -> 
     in_references_section = False
     for line in content.splitlines(keepends=True):
         sanitized_line, in_references_section = _sanitize_line_with_reference_state(
-            line, in_references_section, valid_reference_ids
+            line, in_references_section, reference_id_map
         )
         sanitized_parts.append(sanitized_line)
 
@@ -169,8 +184,8 @@ def sanitize_response_citations(content: str, valid_reference_ids: set[str]) -> 
 class StreamingCitationSanitizer:
     """Incrementally sanitize streamed response chunks without buffering the full answer."""
 
-    def __init__(self, valid_reference_ids: set[str], tail_guard: int = 32) -> None:
-        self.valid_reference_ids = valid_reference_ids
+    def __init__(self, reference_id_map: dict[str, str], tail_guard: int = 32) -> None:
+        self.reference_id_map = reference_id_map
         self.tail_guard = tail_guard
         self.buffer = ""
         self.in_references_section = False
@@ -189,7 +204,7 @@ class StreamingCitationSanitizer:
             line = self.buffer[: newline_index + 1]
             self.buffer = self.buffer[newline_index + 1 :]
             sanitized_line, self.in_references_section = _sanitize_line_with_reference_state(
-                line, self.in_references_section, self.valid_reference_ids
+                line, self.in_references_section, self.reference_id_map
             )
             sanitized_parts.append(sanitized_line)
 
@@ -197,7 +212,7 @@ class StreamingCitationSanitizer:
             safe_prefix = self.buffer[:-self.tail_guard]
             self.buffer = self.buffer[-self.tail_guard :]
             sanitized_parts.append(
-                _sanitize_inline_citations(safe_prefix, self.valid_reference_ids)
+                _sanitize_inline_citations(safe_prefix, self.reference_id_map)
             )
 
         return "".join(sanitized_parts)
@@ -207,10 +222,87 @@ class StreamingCitationSanitizer:
             return ""
 
         sanitized_tail, self.in_references_section = _sanitize_line_with_reference_state(
-            self.buffer, self.in_references_section, self.valid_reference_ids
+            self.buffer, self.in_references_section, self.reference_id_map
         )
         self.buffer = ""
         return sanitized_tail
+
+
+def _normalize_references(
+    references: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], dict[str, str]]:
+    """Deduplicate references and assign consecutive ids in their current order."""
+
+    normalized_references: list[dict[str, Any]] = []
+    reference_id_map: dict[str, str] = {}
+    seen_original_ids: set[str] = set()
+
+    for ref in references:
+        original_id = _normalize_reference_id(ref.get("reference_id"))
+        if not original_id or original_id in seen_original_ids:
+            continue
+        seen_original_ids.add(original_id)
+        remapped_id = str(len(normalized_references) + 1)
+        reference_id_map[original_id] = remapped_id
+        ref_copy = ref.copy()
+        ref_copy["reference_id"] = remapped_id
+        normalized_references.append(ref_copy)
+
+    return normalized_references, reference_id_map
+
+
+def _extract_citation_appearance_order(content: str) -> list[str]:
+    """Collect citation ids in first-appearance order from the answer body."""
+
+    if not content:
+        return []
+
+    ordered_ids: list[str] = []
+    seen_ids: set[str] = set()
+    in_references_section = False
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if _REFERENCE_HEADER_RE.match(stripped):
+            in_references_section = True
+            continue
+
+        if in_references_section:
+            if not stripped:
+                continue
+            if _REFERENCE_ENTRY_RE.match(line):
+                continue
+            in_references_section = False
+
+        if in_references_section:
+            continue
+
+        for match in _INLINE_CITATION_RE.finditer(line):
+            for ref_id in re.findall(r"\d+", match.group(1)):
+                if ref_id in seen_ids:
+                    continue
+                seen_ids.add(ref_id)
+                ordered_ids.append(ref_id)
+
+    return ordered_ids
+
+
+def _reorder_references_by_citation_order(
+    references: List[Dict[str, Any]], citation_order: list[str]
+) -> List[Dict[str, Any]]:
+    """Move cited references first, preserving their first appearance order."""
+
+    if not references:
+        return references
+
+    order_rank = {ref_id: index for index, ref_id in enumerate(citation_order)}
+    return sorted(
+        references,
+        key=lambda ref: (
+            order_rank.get(_normalize_reference_id(ref.get("reference_id")), len(order_rank)),
+            int(_normalize_reference_id(ref.get("reference_id")) or "0"),
+        ),
+    )
 
 
 class QueryRequest(BaseModel):
@@ -762,14 +854,17 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 references = enrich_references(
                     references, data, request.include_chunk_content
                 )
-            valid_reference_ids = {
-                str(reference.get("reference_id", "")).strip()
-                for reference in references
-                if str(reference.get("reference_id", "")).strip()
-            }
+            references, reference_id_map = _normalize_references(references)
             response_content = sanitize_response_citations(
-                response_content, valid_reference_ids
+                response_content, reference_id_map
             )
+            if request.include_references and references:
+                citation_order = _extract_citation_appearance_order(response_content)
+                references = _reorder_references_by_citation_order(references, citation_order)
+                references, reordered_reference_id_map = _normalize_references(references)
+                response_content = sanitize_response_citations(
+                    response_content, reordered_reference_id_map
+                )
 
             # Return response with or without references based on request
             if request.include_references:
@@ -1006,11 +1101,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     references = enrich_references(
                         references, data, request.include_chunk_content
                     )
-                valid_reference_ids = {
-                    str(reference.get("reference_id", "")).strip()
-                    for reference in references
-                    if str(reference.get("reference_id", "")).strip()
-                }
+                references, reference_id_map = _normalize_references(references)
 
                 if llm_response.get("is_streaming"):
                     # Streaming mode: send references first, then stream response chunks
@@ -1019,7 +1110,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
                     response_stream = llm_response.get("response_iterator")
                     if response_stream:
-                        sanitizer = StreamingCitationSanitizer(valid_reference_ids)
+                        sanitizer = StreamingCitationSanitizer(reference_id_map)
                         try:
                             async for chunk in response_stream:
                                 if chunk:  # Only send non-empty content
@@ -1038,8 +1129,21 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     if not response_content:
                         response_content = "No relevant context found for the query."
                     response_content = sanitize_response_citations(
-                        response_content, valid_reference_ids
+                        response_content, reference_id_map
                     )
+                    if request.include_references and references:
+                        citation_order = _extract_citation_appearance_order(
+                            response_content
+                        )
+                        references = _reorder_references_by_citation_order(
+                            references, citation_order
+                        )
+                        references, reordered_reference_id_map = _normalize_references(
+                            references
+                        )
+                        response_content = sanitize_response_citations(
+                            response_content, reordered_reference_id_map
+                        )
 
                     # Create complete response object
                     complete_response = {"response": response_content}

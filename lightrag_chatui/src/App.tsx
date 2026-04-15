@@ -27,16 +27,49 @@ const makeId = () => {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-const STARTER_PROMPTS = [
-  '做梦好不好？',
-  '修炼的重点是是什么？',
-  '什么是性命双修？',
-  '玄德是什么？',
-  '为什么自性为师是很重要的？',
-  '什么是清净？',
-  '元神是什么？',
-  '什么是“反者道之动”？'
+const STARTER_PROMPT_DECKS = [
+  {
+    label: '入门发问',
+    prompts: [
+      '做梦好不好？',
+      '修炼的重点是什么？',
+      '什么是性命双修？',
+      '玄德是什么？',
+      '为什么自性为师很重要？',
+      '什么是清净？',
+      '元神是什么？',
+      '什么是“反者道之动”？'
+    ]
+  },
+  {
+    label: '修持辨析',
+    prompts: [
+      '为什么越修越容易看到自己的执著？',
+      '先天意识和后天意识有什么不同？',
+      '无为是不是等于什么都不做？',
+      '为什么修行里常说要观照自己？',
+      '如何理解修炼中的真假、虚实？',
+      '为什么懂了很多道理，志向却还是立不起来？',
+      '如何理解返观内照？',
+      '道和德之间是什么关系？'
+    ]
+  },
+  {
+    label: '经典切入',
+    prompts: [
+      '《道德经》里讲“柔弱胜刚强”应该怎么理解？',
+      '“上善若水”对修行意味着什么？',
+      '《黄庭内景经》主要在讲什么？',
+      '如何理解“致虚极，守静笃”？',
+      '什么叫“知其白，守其黑”？',
+      '“反者道之动”在修持中怎么体现？',
+      '经典里说的“抱一”是什么意思？',
+      '什么叫“功夫要落在身心上”？'
+    ]
+  }
 ]
+
+const STARTER_PROMPT_COUNT = 6
 
 const summarizePath = (filePath: string) => {
   const pieces = filePath.split('/').filter(Boolean)
@@ -47,6 +80,26 @@ const summarizePath = (filePath: string) => {
 const summarizeQuestion = (text: string) => {
   const singleLine = text.replace(/\s+/g, ' ').trim()
   return singleLine.length > 28 ? `${singleLine.slice(0, 28)}...` : singleLine
+}
+
+const shuffle = <T,>(items: T[]) => {
+  const next = [...items]
+
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1))
+    ;[next[index], next[swapIndex]] = [next[swapIndex], next[index]]
+  }
+
+  return next
+}
+
+const pickStarterPromptDeck = () => {
+  const deck =
+    STARTER_PROMPT_DECKS[Math.floor(Math.random() * STARTER_PROMPT_DECKS.length)]
+  return {
+    label: deck.label,
+    prompts: shuffle(deck.prompts).slice(0, STARTER_PROMPT_COUNT)
+  }
 }
 
 const stripKnownFileExtensions = (text: string) =>
@@ -192,6 +245,126 @@ const snippetParagraphs = (snippet?: string) => {
   return paragraphs.length > 0 ? paragraphs : ['当前引用未包含 chunk 内容。']
 }
 
+const getMessageQuestion = (messages: ChatMessage[], messageId: string) => {
+  const messageIndex = messages.findIndex((message) => message.id === messageId)
+  if (messageIndex <= 0) {
+    return ''
+  }
+
+  for (let index = messageIndex - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user') {
+      return messages[index].content.trim()
+    }
+  }
+
+  return ''
+}
+
+const buildReferenceLines = (references?: ReferenceItem[]) => {
+  if (!references || references.length === 0) {
+    return []
+  }
+
+  return references.flatMap((reference) => {
+    const paragraphs = (reference.content ?? [])
+      .flatMap((snippet) => snippetParagraphs(snippet))
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+
+    if (paragraphs.length === 0) {
+      return [`[${reference.reference_id}] ${summarizePath(reference.file_path)}`]
+    }
+
+    return [
+      `[${reference.reference_id}] ${summarizePath(reference.file_path)}`,
+      ...paragraphs.map((paragraph) => `  ${paragraph}`)
+    ]
+  })
+}
+
+const buildAnswerExportText = (question: string, message: ChatMessage) => {
+  const sections = splitAnswerSections(stripKnownFileExtensions(message.content))
+  const references = buildReferenceLines(message.references)
+
+  return [
+    question ? `问题\n${question}` : '',
+    sections.body ? `回答\n${toSpeakableText(sections.body)}` : '',
+    references.length > 0 ? `参考资料\n${references.join('\n')}` : '',
+    ANSWER_DISCLAIMER
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+const escapeHtml = (text: string) =>
+  text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+
+const encodeSharePayload = (payload: unknown) => {
+  const json = JSON.stringify(payload)
+  const bytes = new TextEncoder().encode(json)
+  let binary = ''
+
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte)
+  })
+
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+}
+
+const decodeSharePayload = (encoded: string) => {
+  const normalized = encoded
+    .replaceAll('-', '+')
+    .replaceAll('_', '/')
+    .padEnd(Math.ceil(encoded.length / 4) * 4, '=')
+  const binary = atob(normalized)
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+
+  return JSON.parse(new TextDecoder().decode(bytes)) as {
+    question: string
+    answer: string
+    references?: ReferenceItem[]
+    createdAt: number
+  }
+}
+
+const buildPrintableHtml = (question: string, message: ChatMessage) => {
+  const sections = splitAnswerSections(stripKnownFileExtensions(message.content))
+  const references = buildReferenceLines(message.references)
+    .map((line) => escapeHtml(line))
+    .join('<br />')
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(summarizeQuestion(question || '玄德问答'))}</title>
+  <style>
+    body { margin: 0; padding: 32px; color: #1f312d; background: #f8f3e8; font: 16px/1.75 "PingFang SC", "Hiragino Sans GB", sans-serif; }
+    main { max-width: 860px; margin: 0 auto; background: #fffdf8; border: 1px solid #e2d9c8; border-radius: 18px; padding: 28px; }
+    h1 { margin: 0 0 12px; font-family: "Songti SC", serif; }
+    section + section { margin-top: 24px; padding-top: 20px; border-top: 1px solid #ece2d0; }
+    .label { margin: 0 0 8px; color: #93724b; font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; }
+    .body, .references { white-space: pre-wrap; }
+    .disclaimer { margin-top: 24px; color: #60706a; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>玄德问答</h1>
+    ${question ? `<section><p class="label">问题</p><div class="body">${escapeHtml(question)}</div></section>` : ''}
+    <section><p class="label">回答</p><div class="body">${escapeHtml(sections.body || message.content)}</div></section>
+    ${references ? `<section><p class="label">参考资料</p><div class="references">${references}</div></section>` : ''}
+    <p class="disclaimer">${escapeHtml(ANSWER_DISCLAIMER)}</p>
+  </main>
+</body>
+</html>`
+}
+
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 const normalizeEntityTerms = (terms?: string[]) =>
@@ -280,6 +453,7 @@ const CitationRef = ({
 
 type MessageCardProps = {
   message: ChatMessage
+  relatedQuestion: string
   isSpeaking: boolean
   isSpeechLoading: boolean
   isSubmitting: boolean
@@ -288,10 +462,14 @@ type MessageCardProps = {
   onSelectReference: (referenceId: string, messageId: string) => void
   onToggleSpeak: (message: ChatMessage) => void
   onAskFollowup: (question: string) => void
+  onCopy: (message: ChatMessage, relatedQuestion: string) => void
+  onShare: (message: ChatMessage, relatedQuestion: string) => void
+  onDownloadPdf: (message: ChatMessage, relatedQuestion: string) => void
 }
 
 const MessageCard = ({
   message,
+  relatedQuestion,
   isSpeaking,
   isSpeechLoading,
   isSubmitting,
@@ -299,7 +477,10 @@ const MessageCard = ({
   onHoverReferenceEnd,
   onSelectReference,
   onToggleSpeak,
-  onAskFollowup
+  onAskFollowup,
+  onCopy,
+  onShare,
+  onDownloadPdf
 }: MessageCardProps) => {
   const displayContent =
     message.role === 'assistant' ? stripKnownFileExtensions(message.content) : message.content
@@ -360,16 +541,6 @@ const MessageCard = ({
             minute: '2-digit'
           })}
         </span>
-        {message.role === 'assistant' && !message.isStreaming && !message.error && (
-          <button
-            type="button"
-            className={`message-audio-button ${isSpeaking ? 'active' : ''}`}
-            onClick={() => onToggleSpeak(message)}
-            disabled={isSpeechLoading && !isSpeaking}
-          >
-            {isSpeechLoading && !isSpeaking ? '朗读准备中…' : isSpeaking ? '停止朗读' : '朗读'}
-          </button>
-        )}
       </div>
       <div className="message-body">
         {message.role === 'assistant' ? (
@@ -412,7 +583,44 @@ const MessageCard = ({
               </section>
             )}
             {shouldShowDisclaimer && (
-              <p className="answer-disclaimer">{ANSWER_DISCLAIMER}</p>
+              <>
+                <p className="answer-disclaimer">{ANSWER_DISCLAIMER}</p>
+                <div className="message-action-row">
+                  <button
+                    type="button"
+                    className={`message-audio-button ${isSpeaking ? 'active' : ''}`}
+                    onClick={() => onToggleSpeak(message)}
+                    disabled={isSpeechLoading && !isSpeaking}
+                  >
+                    <span aria-hidden="true">📢</span>
+                    {isSpeechLoading && !isSpeaking ? '朗读准备中…' : isSpeaking ? '停止朗读' : '朗读'}
+                  </button>
+                  <button
+                    type="button"
+                    className="message-utility-button"
+                    onClick={() => onShare(message, relatedQuestion)}
+                  >
+                    <span aria-hidden="true">🔗</span>
+                    分享
+                  </button>
+                  <button
+                    type="button"
+                    className="message-utility-button"
+                    onClick={() => onDownloadPdf(message, relatedQuestion)}
+                  >
+                    <span aria-hidden="true">🗎</span>
+                    PDF
+                  </button>
+                  <button
+                    type="button"
+                    className="message-utility-button"
+                    onClick={() => onCopy(message, relatedQuestion)}
+                  >
+                    <span aria-hidden="true">⧉</span>
+                    复制
+                  </button>
+                </div>
+              </>
             )}
           </>
         ) : (
@@ -443,9 +651,13 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false)
   const [isUploadingAudio, setIsUploadingAudio] = useState(false)
   const [speechError, setSpeechError] = useState('')
+  const [uiStatus, setUiStatus] = useState<{ tone: 'error' | 'success'; text: string } | null>(
+    null
+  )
   const [speechLoadingTarget, setSpeechLoadingTarget] = useState<string | null>(null)
   const [playingAudioTarget, setPlayingAudioTarget] = useState<string | null>(null)
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
+  const [starterPromptDeck, setStarterPromptDeck] = useState(() => pickStarterPromptDeck())
   const [touchReference, setTouchReference] = useState<{
     messageId: string
     referenceId: string
@@ -465,6 +677,7 @@ export default function App() {
   const audioUploadInputRef = useRef<HTMLInputElement | null>(null)
   const hoverShowTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const hoverHideTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const uiStatusTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const voiceInputSupportError = getPCMRecorderSupportError()
   const audioUploadSupportError = getAudioProcessingSupportError()
 
@@ -526,6 +739,50 @@ export default function App() {
   }, [currentSessionId])
 
   useEffect(() => {
+    const hash = window.location.hash.startsWith('#share=')
+      ? window.location.hash.slice('#share='.length)
+      : ''
+
+    if (!hash) {
+      return
+    }
+
+    try {
+      const payload = decodeSharePayload(hash)
+      const sharedSessionId = `shared-${payload.createdAt}`
+      const sharedSession: ChatSession = {
+        id: sharedSessionId,
+        title: summarizeQuestion(payload.question || '分享问答'),
+        updatedAt: payload.createdAt,
+        messages: [
+          {
+            id: `${sharedSessionId}-question`,
+            role: 'user',
+            content: payload.question,
+            createdAt: payload.createdAt
+          },
+          {
+            id: `${sharedSessionId}-answer`,
+            role: 'assistant',
+            content: payload.answer,
+            references: payload.references ?? [],
+            createdAt: payload.createdAt + 1
+          }
+        ]
+      }
+
+      setSessions((current) => {
+        const filtered = current.filter((session) => session.id !== sharedSessionId)
+        return [sharedSession, ...filtered]
+      })
+      setCurrentSessionId(sharedSessionId)
+      setUiStatus({ tone: 'success', text: '已打开分享问答。' })
+    } catch {
+      setUiStatus({ tone: 'error', text: '分享内容无法解析。' })
+    }
+  }, [])
+
+  useEffect(() => {
     return () => {
       if (hoverShowTimerRef.current !== null) {
         window.clearTimeout(hoverShowTimerRef.current)
@@ -549,8 +806,24 @@ export default function App() {
         URL.revokeObjectURL(audioUrlRef.current)
         audioUrlRef.current = null
       }
+
+      if (uiStatusTimerRef.current !== null) {
+        window.clearTimeout(uiStatusTimerRef.current)
+      }
     }
   }, [])
+
+  const showUiStatus = (text: string, tone: 'error' | 'success' = 'success') => {
+    if (uiStatusTimerRef.current !== null) {
+      window.clearTimeout(uiStatusTimerRef.current)
+    }
+
+    setUiStatus({ tone, text })
+    uiStatusTimerRef.current = window.setTimeout(() => {
+      setUiStatus(null)
+      uiStatusTimerRef.current = null
+    }, 3200)
+  }
 
   const upsertSession = (
     sessionId: string,
@@ -585,6 +858,7 @@ export default function App() {
     setSpeechLoadingTarget(null)
     setIsRecording(false)
     setSpeechError('')
+    setUiStatus(null)
     setCurrentSessionId(null)
     setQuestion('')
     setIsSubmitting(false)
@@ -1057,6 +1331,65 @@ export default function App() {
     setTouchReference({ referenceId, messageId })
   }
 
+  const handleCopyAnswer = async (message: ChatMessage, relatedQuestion: string) => {
+    try {
+      await navigator.clipboard.writeText(buildAnswerExportText(relatedQuestion, message))
+      showUiStatus('已复制这一问一答。')
+    } catch {
+      showUiStatus('复制失败，请检查浏览器权限。', 'error')
+    }
+  }
+
+  const handleShareAnswer = async (message: ChatMessage, relatedQuestion: string) => {
+    const sections = splitAnswerSections(stripKnownFileExtensions(message.content))
+    const payload = encodeSharePayload({
+      question: relatedQuestion,
+      answer: sections.body || message.content,
+      references: message.references ?? [],
+      createdAt: message.createdAt
+    })
+    const shareUrl = new URL(window.location.href)
+    shareUrl.hash = `share=${payload}`
+    const shareText = buildAnswerExportText(relatedQuestion, message)
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: summarizeQuestion(relatedQuestion || '玄德问答'),
+          text: shareText,
+          url: shareUrl.toString()
+        })
+        showUiStatus('分享面板已打开。')
+        return
+      }
+
+      await navigator.clipboard.writeText(shareUrl.toString())
+      showUiStatus('分享链接已复制。')
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return
+      }
+
+      showUiStatus('分享失败，请稍后再试。', 'error')
+    }
+  }
+
+  const handleDownloadPdf = (message: ChatMessage, relatedQuestion: string) => {
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer')
+    if (!printWindow) {
+      showUiStatus('无法打开打印窗口，请检查浏览器拦截设置。', 'error')
+      return
+    }
+
+    printWindow.document.write(buildPrintableHtml(relatedQuestion, message))
+    printWindow.document.close()
+    printWindow.focus()
+    window.setTimeout(() => {
+      printWindow.print()
+    }, 120)
+    showUiStatus('已打开打印窗口，可另存为 PDF。')
+  }
+
   const clearHoverHideTimer = () => {
     if (hoverHideTimerRef.current !== null) {
       window.clearTimeout(hoverHideTimerRef.current)
@@ -1199,8 +1532,18 @@ export default function App() {
             <div className="empty-state">
               <p className="empty-kicker">起问引子</p>
               <h3>从一条问题开始，让典籍自己发声</h3>
+              <div className="empty-prompt-header">
+                <p>本次引子：{starterPromptDeck.label}</p>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setStarterPromptDeck(pickStarterPromptDeck())}
+                >
+                  换一组
+                </button>
+              </div>
               <div className="empty-prompt-grid">
-                {STARTER_PROMPTS.map((prompt) => (
+                {starterPromptDeck.prompts.map((prompt) => (
                   <button
                     key={prompt}
                     className="empty-prompt-card"
@@ -1216,6 +1559,7 @@ export default function App() {
               <MessageCard
                 key={message.id}
                 message={message}
+                relatedQuestion={getMessageQuestion(messages, message.id)}
                 isSpeaking={playingAudioTarget === `message:${message.id}`}
                 isSpeechLoading={speechLoadingTarget === `message:${message.id}`}
                 isSubmitting={isSubmitting}
@@ -1224,6 +1568,9 @@ export default function App() {
                 onSelectReference={handleSelectReference}
                 onToggleSpeak={handleToggleSpeak}
                 onAskFollowup={(followupQuestion) => void submitQuestion(followupQuestion)}
+                onCopy={handleCopyAnswer}
+                onShare={handleShareAnswer}
+                onDownloadPdf={handleDownloadPdf}
               />
             ))
           )}
@@ -1245,7 +1592,19 @@ export default function App() {
             rows={1}
           />
           <div className="composer-footer">
-            {speechError ? <p className="composer-status composer-error">{speechError}</p> : <span />}
+            {speechError ? (
+              <p className="composer-status composer-error">{speechError}</p>
+            ) : uiStatus ? (
+              <p
+                className={`composer-status ${
+                  uiStatus.tone === 'error' ? 'composer-error' : 'composer-success'
+                }`}
+              >
+                {uiStatus.text}
+              </p>
+            ) : (
+              <span />
+            )}
             <div className="composer-actions">
               <input
                 ref={audioUploadInputRef}
