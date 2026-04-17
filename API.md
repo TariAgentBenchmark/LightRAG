@@ -5,55 +5,17 @@
 
 ## 1. Base URL
 
-统一按下面这个前缀访问：
+当前内网环境直接访问下面这个地址：
 
 ```text
-{origin}/chat-api/
+http://172.23.9.6:9621
 ```
 
-例如：
+前端所有接口都基于这个前缀拼接，不需要再走 `/chat-api/` 代理层。
 
-```text
-https://your-domain.com/chat-api/
-```
+## 2. 需要对接的接口
 
-
-## 2. 鉴权
-
-支持二选一：
-
-### API Key
-
-HTTP：
-
-```http
-X-API-Key: <api-key>
-```
-
-WebSocket：
-
-```text
-?api_key=<api-key>
-```
-
-### Bearer Token
-
-HTTP：
-
-```http
-Authorization: Bearer <token>
-```
-
-WebSocket：
-
-```text
-?token=<token>
-```
-
-
-## 3. 需要对接的接口
-
-### 3.1 流式问答
+### 2.1 流式问答
 
 `POST /query/stream`
 
@@ -118,7 +80,7 @@ Accept: application/x-ndjson
 ```
 
 
-### 3.2 TTS 朗读
+### 2.2 TTS 朗读
 
 `POST /speech/tts`
 
@@ -152,14 +114,14 @@ Accept: application/x-ndjson
 成功时直接返回音频二进制，前端按 `Blob` 播放即可。
 
 
-### 3.3 ASR 语音输入
+### 2.3 ASR 语音输入
 
 `WS /speech/asr/stream`
 
 连接地址示例：
 
 ```text
-wss://your-domain.com/chat-api/speech/asr/stream?token=<token>
+ws://172.23.9.6:9621/speech/asr/stream
 ```
 
 当前建议的音频规格：
@@ -217,7 +179,7 @@ wss://your-domain.com/chat-api/speech/asr/stream?token=<token>
 ```
 
 
-## 4. 引用资料结构
+## 3. 引用资料结构
 
 问答接口里 `references` 的单项结构大致如下：
 
@@ -248,7 +210,7 @@ wss://your-domain.com/chat-api/speech/asr/stream?token=<token>
 - 前端不要自己改引用编号，按后端返回值直接绑定
 
 
-## 5. 不需要新后端接口的功能
+## 4. 不需要新后端接口的功能
 
 下面这些功能当前都可以前端自己做，不需要后端再补 API：
 
@@ -268,4 +230,3 @@ wss://your-domain.com/chat-api/speech/asr/stream?token=<token>
 4. 引用资料朗读成功
 5. 语音输入识别成功并写回输入框
 6. 接口报错时，前端能正确结束 loading 并提示错误
-
