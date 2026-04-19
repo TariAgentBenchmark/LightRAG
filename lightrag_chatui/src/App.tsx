@@ -531,6 +531,7 @@ type MessageCardProps = {
   relatedQuestion: string
   isSpeaking: boolean
   isSpeechLoading: boolean
+  isSpeechReady: boolean
   isSubmitting: boolean
   onHoverReferenceStart: (referenceId: string, messageId: string, anchorRect: DOMRect) => void
   onHoverReferenceEnd: () => void
@@ -547,6 +548,7 @@ const MessageCard = ({
   relatedQuestion,
   isSpeaking,
   isSpeechLoading,
+  isSpeechReady,
   isSubmitting,
   onHoverReferenceStart,
   onHoverReferenceEnd,
@@ -668,7 +670,13 @@ const MessageCard = ({
                     disabled={isSpeechLoading && !isSpeaking}
                   >
                     <span aria-hidden="true">📢</span>
-                    {isSpeechLoading && !isSpeaking ? '朗读准备中…' : isSpeaking ? '停止朗读' : '朗读'}
+                    {isSpeechLoading && !isSpeaking
+                      ? '朗读准备中…'
+                      : isSpeaking
+                        ? '停止朗读'
+                        : isSpeechReady
+                          ? '点击播放'
+                          : '朗读'}
                   </button>
                   <button
                     type="button"
@@ -731,6 +739,7 @@ export default function App() {
   )
   const [speechLoadingTarget, setSpeechLoadingTarget] = useState<string | null>(null)
   const [playingAudioTarget, setPlayingAudioTarget] = useState<string | null>(null)
+  const [pendingPlaybackTarget, setPendingPlaybackTarget] = useState<string | null>(null)
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
   const [starterPromptDeck, setStarterPromptDeck] = useState(() => pickStarterPromptDeck())
   const [touchReference, setTouchReference] = useState<{
@@ -747,6 +756,7 @@ export default function App() {
   const recorderStopRef = useRef<(() => Promise<void>) | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioUrlRef = useRef<string | null>(null)
+  const audioTargetRef = useRef<string | null>(null)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const audioUploadInputRef = useRef<HTMLInputElement | null>(null)
@@ -929,7 +939,9 @@ export default function App() {
       URL.revokeObjectURL(audioUrlRef.current)
       audioUrlRef.current = null
     }
+    audioTargetRef.current = null
     setPlayingAudioTarget(null)
+    setPendingPlaybackTarget(null)
     setSpeechLoadingTarget(null)
     setIsRecording(false)
     setSpeechError('')
@@ -945,6 +957,15 @@ export default function App() {
   const stopSpeaking = () => {
     if (audioRef.current) {
       audioRef.current.pause()
+    }
+
+    setPlayingAudioTarget(null)
+    setSpeechLoadingTarget(null)
+  }
+
+  const clearSpeechAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause()
       audioRef.current = null
     }
 
@@ -953,8 +974,42 @@ export default function App() {
       audioUrlRef.current = null
     }
 
+    audioTargetRef.current = null
     setPlayingAudioTarget(null)
     setSpeechLoadingTarget(null)
+    setPendingPlaybackTarget(null)
+  }
+
+  const attachSpeechAudioHandlers = (audio: HTMLAudioElement, target: string) => {
+    audio.onended = () => {
+      stopSpeaking()
+      setPendingPlaybackTarget(target)
+    }
+    audio.onerror = () => {
+      setSpeechError('语音播放失败。')
+      clearSpeechAudio()
+    }
+  }
+
+  const tryPlaySpeechAudio = async (target: string, blockedMessage: string) => {
+    const audio = audioRef.current
+    if (!audio || audioTargetRef.current !== target) {
+      return false
+    }
+
+    try {
+      audio.currentTime = 0
+      await audio.play()
+      setPlayingAudioTarget(target)
+      setPendingPlaybackTarget(null)
+      setSpeechError('')
+      return true
+    } catch {
+      setPlayingAudioTarget(null)
+      setPendingPlaybackTarget(target)
+      setSpeechError(blockedMessage)
+      return false
+    }
   }
 
   const playSpeechText = async (
@@ -967,7 +1022,12 @@ export default function App() {
       return
     }
 
-    stopSpeaking()
+    if (pendingPlaybackTarget === target && audioRef.current && audioTargetRef.current === target) {
+      await tryPlaySpeechAudio(target, '语音已准备好，请再点一次播放。')
+      return
+    }
+
+    clearSpeechAudio()
     setSpeechError('')
     setSpeechLoadingTarget(target)
 
@@ -986,20 +1046,13 @@ export default function App() {
       const audio = new Audio(audioUrl)
       audioRef.current = audio
       audioUrlRef.current = audioUrl
-      setPlayingAudioTarget(target)
+      audioTargetRef.current = target
+      attachSpeechAudioHandlers(audio, target)
 
-      audio.onended = () => {
-        stopSpeaking()
-      }
-      audio.onerror = () => {
-        setSpeechError('语音播放失败。')
-        stopSpeaking()
-      }
-
-      await audio.play()
+      await tryPlaySpeechAudio(target, '语音已生成，请再点一次播放。')
     } catch (error) {
       setSpeechError(error instanceof Error ? error.message : '语音合成失败。')
-      stopSpeaking()
+      clearSpeechAudio()
     } finally {
       setSpeechLoadingTarget((current) => (current === target ? null : current))
     }
@@ -1691,6 +1744,7 @@ export default function App() {
                 relatedQuestion={getMessageQuestion(messages, message.id)}
                 isSpeaking={playingAudioTarget === `message:${message.id}`}
                 isSpeechLoading={speechLoadingTarget === `message:${message.id}`}
+                isSpeechReady={pendingPlaybackTarget === `message:${message.id}`}
                 isSubmitting={isSubmitting}
                 onHoverReferenceStart={handleHoverReferenceStart}
                 onHoverReferenceEnd={handleHoverReferenceEnd}
@@ -1814,7 +1868,9 @@ export default function App() {
                 ? '朗读准备中…'
                 : playingAudioTarget === `reference:${hoverMessage.id}:${hoverReference.reference_id}`
                   ? '停止朗读'
-                  : '朗读'}
+                  : pendingPlaybackTarget === `reference:${hoverMessage.id}:${hoverReference.reference_id}`
+                    ? '点击播放'
+                    : '朗读'}
             </button>
           </div>
           {normalizeEntityTerms(hoverReference.entity_terms).length > 0 && (
@@ -1865,7 +1921,9 @@ export default function App() {
                     ? '朗读准备中…'
                     : playingAudioTarget === `reference:${touchMessage.id}:${touchMessageReference.reference_id}`
                       ? '停止朗读'
-                      : '朗读'}
+                      : pendingPlaybackTarget === `reference:${touchMessage.id}:${touchMessageReference.reference_id}`
+                        ? '点击播放'
+                        : '朗读'}
                 </button>
                 <button
                   type="button"
