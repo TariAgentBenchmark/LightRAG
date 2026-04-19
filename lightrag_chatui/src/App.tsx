@@ -627,18 +627,6 @@ const MessageCard = ({
             >
               {answerBody || (message.isStreaming ? '请稍候...' : '')}
             </ReactMarkdown>
-            {referencesMarkdown && (
-              <section className="message-section">
-                <h3 className="message-section-title">References</h3>
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkCitations]}
-                  rehypePlugins={[rehypeRaw]}
-                  components={markdownComponents}
-                >
-                  {referencesMarkdown}
-                </ReactMarkdown>
-              </section>
-            )}
             {followupQuestions.length > 0 && (
               <section className="message-section followup-section">
                 <h3 className="message-section-title">延伸追问</h3>
@@ -655,6 +643,18 @@ const MessageCard = ({
                     </button>
                   ))}
                 </div>
+              </section>
+            )}
+            {referencesMarkdown && (
+              <section className="message-section">
+                <h3 className="message-section-title">References</h3>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkCitations]}
+                  rehypePlugins={[rehypeRaw]}
+                  components={markdownComponents}
+                >
+                  {referencesMarkdown}
+                </ReactMarkdown>
               </section>
             )}
             {shouldShowDisclaimer && (
