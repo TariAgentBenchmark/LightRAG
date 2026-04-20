@@ -1129,8 +1129,7 @@ export default function App() {
       const isLastSegment = index === segments.length - 1
       const audio = createSpeechAudio(target, blob, () => {
         if (isLastSegment) {
-          stopSpeaking(false)
-          setPendingPlaybackTarget(target)
+          clearSpeechAudio()
         }
       })
 
