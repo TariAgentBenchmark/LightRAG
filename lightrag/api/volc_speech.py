@@ -309,7 +309,8 @@ def extract_asr_text(payload: dict[str, Any]) -> tuple[str, bool]:
     return (text, definite)
 
 
-async def synthesize_tts_audio(
+def _build_tts_payload(
+    config: VolcSpeechConfig,
     text: str,
     speaker_id: str,
     audio_format: Optional[str] = None,
@@ -317,12 +318,8 @@ async def synthesize_tts_audio(
     speed_ratio: Optional[float] = None,
     volume_ratio: Optional[float] = None,
     pitch_ratio: Optional[float] = None,
-) -> tuple[bytes, str]:
-    config = ensure_volc_speech_config(
-        require_asr=False, require_tts=True, require_tts_speaker=False
-    )
-
-    payload = {
+) -> dict[str, Any]:
+    return {
         "user": {"uid": config.app_id},
         "req_params": {
             "speaker": speaker_id,
@@ -343,6 +340,105 @@ async def synthesize_tts_audio(
             },
         },
     }
+
+
+def get_tts_media_type(config: VolcSpeechConfig, audio_format: Optional[str] = None) -> str:
+    fmt = (audio_format or config.tts_audio_format).lower()
+    return {
+        "mp3": "audio/mpeg",
+        "wav": "audio/wav",
+        "pcm": "audio/pcm",
+        "opus": "audio/ogg",
+    }.get(fmt, "application/octet-stream")
+
+
+async def stream_tts_audio(
+    text: str,
+    speaker_id: str,
+    audio_format: Optional[str] = None,
+    sample_rate: Optional[int] = None,
+    speed_ratio: Optional[float] = None,
+    volume_ratio: Optional[float] = None,
+    pitch_ratio: Optional[float] = None,
+) -> AsyncIterator[bytes]:
+    config = ensure_volc_speech_config(
+        require_asr=False, require_tts=True, require_tts_speaker=False
+    )
+    payload = _build_tts_payload(
+        config=config,
+        text=text,
+        speaker_id=speaker_id,
+        audio_format=audio_format,
+        sample_rate=sample_rate,
+        speed_ratio=speed_ratio,
+        volume_ratio=volume_ratio,
+        pitch_ratio=pitch_ratio,
+    )
+    headers = build_tts_headers(config)
+
+    has_audio = False
+    timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream("POST", config.tts_url, headers=headers, json=payload) as response:
+            if response.status_code >= 400:
+                body = await response.aread()
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=(
+                        "Volcengine TTS request failed: "
+                        f"HTTP {response.status_code} {body.decode('utf-8', errors='ignore')}"
+                    ),
+                )
+
+            async for event in _iter_tts_events(response):
+                code = event.get("code")
+                if code not in (None, 0, 3000, 20000000):
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=(
+                            "Volcengine TTS returned an error: "
+                            f"{event.get('message', 'unknown error')}"
+                        ),
+                    )
+
+                chunk = event.get("data")
+                if isinstance(chunk, str) and chunk:
+                    has_audio = True
+                    yield base64.b64decode(chunk)
+
+                sequence = event.get("sequence")
+                if isinstance(sequence, int) and sequence < 0:
+                    break
+
+    if not has_audio:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Volcengine TTS returned no audio data.",
+        )
+
+
+async def synthesize_tts_audio(
+    text: str,
+    speaker_id: str,
+    audio_format: Optional[str] = None,
+    sample_rate: Optional[int] = None,
+    speed_ratio: Optional[float] = None,
+    volume_ratio: Optional[float] = None,
+    pitch_ratio: Optional[float] = None,
+) -> tuple[bytes, str]:
+    config = ensure_volc_speech_config(
+        require_asr=False, require_tts=True, require_tts_speaker=False
+    )
+    payload = _build_tts_payload(
+        config=config,
+        text=text,
+        speaker_id=speaker_id,
+        audio_format=audio_format,
+        sample_rate=sample_rate,
+        speed_ratio=speed_ratio,
+        volume_ratio=volume_ratio,
+        pitch_ratio=pitch_ratio,
+    )
 
     headers = build_tts_headers(config)
     audio_bytes = bytearray()
@@ -385,14 +481,7 @@ async def synthesize_tts_audio(
             detail="Volcengine TTS returned no audio data.",
         )
 
-    fmt = (audio_format or config.tts_audio_format).lower()
-    media_type = {
-        "mp3": "audio/mpeg",
-        "wav": "audio/wav",
-        "pcm": "audio/pcm",
-        "opus": "audio/ogg",
-    }.get(fmt, "application/octet-stream")
-    return (bytes(audio_bytes), media_type)
+    return (bytes(audio_bytes), get_tts_media_type(config, audio_format))
 
 
 async def _iter_tts_events(response: httpx.Response) -> AsyncIterator[dict[str, Any]]:

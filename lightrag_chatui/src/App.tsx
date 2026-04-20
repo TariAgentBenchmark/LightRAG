@@ -114,6 +114,52 @@ const toSpeakableText = (text: string) =>
     .replace(/\s{2,}/g, ' ')
     .trim()
 
+const splitSpeechSegments = (text: string, maxChars = 120) => {
+  const normalized = toSpeakableText(text)
+  if (!normalized) {
+    return []
+  }
+
+  const sentences = normalized
+    .split(/(?<=[。！？!?；;])\s*/u)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+  const source = sentences.length > 0 ? sentences : [normalized]
+  const segments: string[] = []
+  let current = ""
+
+  for (const sentence of source) {
+    if (!current) {
+      current = sentence
+      continue
+    }
+
+    if (current.length + sentence.length <= maxChars) {
+      current += sentence
+      continue
+    }
+
+    segments.push(current)
+    current = sentence
+  }
+
+  if (current) {
+    segments.push(current)
+  }
+
+  return segments.flatMap((segment) => {
+    if (segment.length <= maxChars * 1.5) {
+      return [segment]
+    }
+
+    const chunks: string[] = []
+    for (let index = 0; index < segment.length; index += maxChars) {
+      chunks.push(segment.slice(index, index + maxChars))
+    }
+    return chunks
+  })
+}
+
 const referenceSpeakableText = (reference: ReferenceItem) => {
   const title = summarizePath(reference.file_path)
   const snippets = (reference.content ?? [])
@@ -757,6 +803,7 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioUrlRef = useRef<string | null>(null)
   const audioTargetRef = useRef<string | null>(null)
+  const speechRunIdRef = useRef(0)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const audioUploadInputRef = useRef<HTMLInputElement | null>(null)
@@ -954,7 +1001,22 @@ export default function App() {
     setMobileDrawerOpen(false)
   }
 
-  const stopSpeaking = () => {
+  const stopSpeaking = (cancelPlayback = true) => {
+    if (cancelPlayback) {
+      speechRunIdRef.current += 1
+    }
+
+    if (audioRef.current) {
+      audioRef.current.pause()
+    }
+
+    setPlayingAudioTarget(null)
+    setSpeechLoadingTarget(null)
+  }
+
+  const pauseSpeaking = () => {
+    speechRunIdRef.current += 1
+
     if (audioRef.current) {
       audioRef.current.pause()
     }
@@ -964,6 +1026,8 @@ export default function App() {
   }
 
   const clearSpeechAudio = () => {
+    speechRunIdRef.current += 1
+
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current = null
@@ -980,15 +1044,42 @@ export default function App() {
     setPendingPlaybackTarget(null)
   }
 
-  const attachSpeechAudioHandlers = (audio: HTMLAudioElement, target: string) => {
-    audio.onended = () => {
-      stopSpeaking()
-      setPendingPlaybackTarget(target)
+  const releaseCurrentAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
     }
+
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+      audioUrlRef.current = null
+    }
+  }
+
+  const attachSpeechAudioHandlers = (
+    audio: HTMLAudioElement,
+    target: string,
+    onEnded?: () => void
+  ) => {
+    audio.onended = onEnded ?? (() => {
+      stopSpeaking(false)
+      setPendingPlaybackTarget(target)
+    })
     audio.onerror = () => {
       setSpeechError('语音播放失败。')
       clearSpeechAudio()
     }
+  }
+
+  const createSpeechAudio = (target: string, blob: Blob, onEnded?: () => void) => {
+    releaseCurrentAudio()
+    const audioUrl = URL.createObjectURL(blob)
+    const audio = new Audio(audioUrl)
+    audioRef.current = audio
+    audioUrlRef.current = audioUrl
+    audioTargetRef.current = target
+    attachSpeechAudioHandlers(audio, target, onEnded)
+    return audio
   }
 
   const tryPlaySpeechAudio = async (target: string, blockedMessage: string) => {
@@ -1012,13 +1103,62 @@ export default function App() {
     }
   }
 
+  const fetchSpeechSegment = (segment: string) =>
+    synthesizeSpeech(config.baseUrl, segment, {
+      apiKey: config.apiKey,
+      bearerToken: config.bearerToken
+    })
+
+  const playSpeechSegments = async (target: string, segments: string[]) => {
+    const runId = speechRunIdRef.current
+    let nextBlobPromise: Promise<Blob> | null = fetchSpeechSegment(segments[0])
+
+    for (let index = 0; index < segments.length; index += 1) {
+      if (speechRunIdRef.current !== runId) {
+        return
+      }
+
+      const blob = await nextBlobPromise
+      nextBlobPromise =
+        index + 1 < segments.length ? fetchSpeechSegment(segments[index + 1]) : null
+
+      if (speechRunIdRef.current !== runId) {
+        return
+      }
+
+      const isLastSegment = index === segments.length - 1
+      const audio = createSpeechAudio(target, blob, () => {
+        if (isLastSegment) {
+          stopSpeaking(false)
+          setPendingPlaybackTarget(target)
+        }
+      })
+
+      const played = await tryPlaySpeechAudio(
+        target,
+        index === 0 ? '语音已生成，请再点一次播放。' : '语音播放被浏览器拦截，请再点一次播放。'
+      )
+
+      if (!played) {
+        return
+      }
+
+      if (!isLastSegment) {
+        await new Promise<void>((resolve, reject) => {
+          audio.onended = () => resolve()
+          audio.onerror = () => reject(new Error('语音播放失败。'))
+        })
+      }
+    }
+  }
+
   const playSpeechText = async (
     target: string,
     text: string,
     emptyMessage: string
   ) => {
     if (playingAudioTarget === target) {
-      stopSpeaking()
+      pauseSpeaking()
       return
     }
 
@@ -1032,24 +1172,13 @@ export default function App() {
     setSpeechLoadingTarget(target)
 
     try {
-      const speakableText = toSpeakableText(text)
-      if (!speakableText) {
+      const speechSegments = splitSpeechSegments(text)
+      if (speechSegments.length === 0) {
         throw new Error(emptyMessage)
       }
 
-      const blob = await synthesizeSpeech(config.baseUrl, speakableText, {
-        apiKey: config.apiKey,
-        bearerToken: config.bearerToken
-      })
-
-      const audioUrl = URL.createObjectURL(blob)
-      const audio = new Audio(audioUrl)
-      audioRef.current = audio
-      audioUrlRef.current = audioUrl
-      audioTargetRef.current = target
-      attachSpeechAudioHandlers(audio, target)
-
-      await tryPlaySpeechAudio(target, '语音已生成，请再点一次播放。')
+      speechRunIdRef.current += 1
+      await playSpeechSegments(target, speechSegments)
     } catch (error) {
       setSpeechError(error instanceof Error ? error.message : '语音合成失败。')
       clearSpeechAudio()

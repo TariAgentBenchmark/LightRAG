@@ -5,6 +5,7 @@ Speech-related routes for external ASR/TTS providers.
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from lightrag.api.auth import auth_handler
@@ -12,7 +13,9 @@ from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.api.volc_speech import (
     bridge_asr_session,
     ensure_volc_speech_config,
+    get_tts_media_type,
     load_volc_speech_config,
+    stream_tts_audio,
     synthesize_tts_audio,
 )
 
@@ -185,6 +188,41 @@ def create_speech_routes(api_key: Optional[str] = None):
             pitch_ratio=request.pitch_ratio,
         )
         return Response(content=audio, media_type=media_type)
+
+    @router.post(
+        "/tts/stream",
+        dependencies=[Depends(combined_auth)],
+    )
+    async def stream_speech(request: TTSRequest):
+        config = ensure_volc_speech_config(
+            require_asr=False, require_tts=True, require_tts_speaker=False
+        )
+        speaker_id = request.speaker_id or config.tts_speaker_id
+        if not speaker_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "TTS speaker is not configured. Set VOLC_TTS_SPEAKER_ID "
+                    "or provide speaker_id in the request."
+                ),
+            )
+
+        return StreamingResponse(
+            stream_tts_audio(
+                text=request.text,
+                speaker_id=speaker_id,
+                audio_format=request.audio_format,
+                sample_rate=request.sample_rate,
+                speed_ratio=request.speed_ratio,
+                volume_ratio=request.volume_ratio,
+                pitch_ratio=request.pitch_ratio,
+            ),
+            media_type=get_tts_media_type(config, request.audio_format),
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.websocket("/asr/stream")
     async def stream_asr(websocket: WebSocket):
