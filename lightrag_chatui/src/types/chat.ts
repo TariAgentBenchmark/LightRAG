@@ -38,6 +38,7 @@ export type AppConfig = {
 export type StreamEvent =
   | { type: 'references'; references: ReferenceItem[] }
   | { type: 'response'; chunk: string }
+  | { type: 'response_final'; content: string; references?: ReferenceItem[] }
   | { type: 'error'; error: string }
 
 export type QueryRequest = {

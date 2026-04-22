@@ -1795,6 +1795,14 @@ export default function App() {
                 }
               }
 
+              if (event.type === 'response_final') {
+                return {
+                  ...message,
+                  content: stripKnownFileExtensions(event.content),
+                  references: event.references ?? message.references
+                }
+              }
+
               if (event.type === 'error') {
                 return {
                   ...message,

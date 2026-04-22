@@ -45,8 +45,18 @@ export const streamQuery = async (
   const emitParsedEvent = (parsed: {
     references?: ReferenceItem[]
     response?: string
+    response_final?: string
     error?: string
   }) => {
+    if (typeof parsed.response_final === 'string') {
+      onEvent({
+        type: 'response_final',
+        content: parsed.response_final,
+        references: Array.isArray(parsed.references) ? parsed.references : undefined
+      })
+      return
+    }
+
     if (Array.isArray(parsed.references)) {
       onEvent({
         type: 'references',
@@ -83,6 +93,7 @@ export const streamQuery = async (
         JSON.parse(trimmed) as {
           references?: ReferenceItem[]
           response?: string
+          response_final?: string
           error?: string
         }
       )
@@ -98,6 +109,7 @@ export const streamQuery = async (
     JSON.parse(trailing) as {
       references?: ReferenceItem[]
       response?: string
+      response_final?: string
       error?: string
     }
   )

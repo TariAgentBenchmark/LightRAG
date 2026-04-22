@@ -16,7 +16,8 @@ router = APIRouter(tags=["query"])
 
 _INLINE_CITATION_RE = re.compile(r"\[(\^?\d+(?:\s*,\s*\d+)*)\]")
 _REFERENCE_HEADER_RE = re.compile(
-    r"^\s{0,3}(?:#{1,6}\s*)?(?:references|reference|参考文献)\s*$",
+    r"^\s{0,3}(?:#{1,6}\s*)?"
+    r"(?:references|reference|参考文献|参考资料|引用文献)\s*$",
     re.IGNORECASE,
 )
 _REFERENCE_ENTRY_RE = re.compile(r"^(\s*(?:[-*+]\s*)?)\[(\d+)\](\s+.*)?$")
@@ -287,21 +288,76 @@ def _extract_citation_appearance_order(content: str) -> list[str]:
     return ordered_ids
 
 
-def _reorder_references_by_citation_order(
+def _strip_generated_reference_section(content: str) -> str:
+    """Remove the model-authored References section before deterministic rebuild."""
+
+    if not content:
+        return content
+
+    kept_lines: list[str] = []
+    for line in content.splitlines():
+        if _REFERENCE_HEADER_RE.match(line.strip()):
+            break
+        kept_lines.append(line)
+
+    return "\n".join(kept_lines).rstrip()
+
+
+def _select_cited_references(
     references: List[Dict[str, Any]], citation_order: list[str]
 ) -> List[Dict[str, Any]]:
-    """Move cited references first, preserving their first appearance order."""
+    ref_by_id = {
+        _normalize_reference_id(ref.get("reference_id")): ref
+        for ref in references
+        if _normalize_reference_id(ref.get("reference_id"))
+    }
 
+    return [ref_by_id[ref_id] for ref_id in citation_order if ref_id in ref_by_id]
+
+
+def _format_reference_title(ref: Dict[str, Any]) -> str:
+    file_path = str(ref.get("file_path", "")).strip()
+    return file_path or f"Reference {ref.get('reference_id', '')}".strip()
+
+
+def _append_deterministic_reference_section(
+    content: str, references: List[Dict[str, Any]]
+) -> str:
     if not references:
-        return references
+        return content.rstrip()
 
-    order_rank = {ref_id: index for index, ref_id in enumerate(citation_order)}
-    return sorted(
-        references,
-        key=lambda ref: (
-            order_rank.get(_normalize_reference_id(ref.get("reference_id")), len(order_rank)),
-            int(_normalize_reference_id(ref.get("reference_id")) or "0"),
-        ),
+    lines = [
+        f"- [{ref['reference_id']}] {_format_reference_title(ref)}"
+        for ref in references
+    ]
+    reference_section = "\n".join(["### References", "", *lines])
+    body = content.rstrip()
+    if not body:
+        return reference_section
+    return f"{body}\n\n{reference_section}"
+
+
+def finalize_response_references(
+    content: str, references: List[Dict[str, Any]]
+) -> tuple[str, List[Dict[str, Any]]]:
+    """Make response citations and the returned reference list share one ordering."""
+
+    normalized_references, initial_id_map = _normalize_references(references)
+    body_content = _strip_generated_reference_section(content)
+    sanitized_content = sanitize_response_citations(body_content, initial_id_map)
+    citation_order = _extract_citation_appearance_order(sanitized_content)
+
+    ordered_references = (
+        _select_cited_references(normalized_references, citation_order)
+        if citation_order
+        else normalized_references
+    )
+    final_references, final_id_map = _normalize_references(ordered_references)
+    final_content = sanitize_response_citations(sanitized_content, final_id_map)
+
+    return (
+        _append_deterministic_reference_section(final_content, final_references),
+        final_references,
     )
 
 
@@ -503,10 +559,14 @@ class StreamChunkResponse(BaseModel):
 
     references: Optional[List[Dict[str, Any]]] = Field(
         default=None,
-        description="Reference list (only in first chunk when include_references=True)",
+        description="Reference list (provisional first chunk or final response when include_references=True)",
     )
     response: Optional[str] = Field(
         default=None, description="Response content chunk or complete response"
+    )
+    response_final: Optional[str] = Field(
+        default=None,
+        description="Final corrected response that replaces streamed chunks when present",
     )
     error: Optional[str] = Field(
         default=None, description="Error message if processing fails"
@@ -854,16 +914,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 references = enrich_references(
                     references, data, request.include_chunk_content
                 )
-            references, reference_id_map = _normalize_references(references)
-            response_content = sanitize_response_citations(
-                response_content, reference_id_map
-            )
-            if request.include_references and references:
-                citation_order = _extract_citation_appearance_order(response_content)
-                references = _reorder_references_by_citation_order(references, citation_order)
-                references, reordered_reference_id_map = _normalize_references(references)
+                response_content, references = finalize_response_references(
+                    response_content, references
+                )
+            else:
+                references, reference_id_map = _normalize_references(references)
                 response_content = sanitize_response_citations(
-                    response_content, reordered_reference_id_map
+                    response_content, reference_id_map
                 )
 
             # Return response with or without references based on request
@@ -887,17 +944,17 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             "type": "string",
                             "format": "ndjson",
                             "description": "Newline-delimited JSON (NDJSON) format used for both streaming and non-streaming responses. For streaming: multiple lines with separate JSON objects. For non-streaming: single line with complete JSON object.",
-                            "example": '{"references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}\n{"response": "Artificial Intelligence is"}\n{"response": " a field of computer science"}\n{"response": " that focuses on creating intelligent machines."}',
+                            "example": '{"references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}\n{"response": "Artificial Intelligence is"}\n{"response": " a field of computer science"}\n{"response_final": "Artificial Intelligence is a field of computer science[1].\\n\\n### References\\n\\n- [1] /documents/ai.pdf", "references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}',
                         },
                         "examples": {
                             "streaming_with_references": {
                                 "summary": "Streaming mode with references (stream=true)",
-                                "description": "Multiple NDJSON lines when stream=True and include_references=True. First line contains references, subsequent lines contain response chunks.",
-                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf"}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt"}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence, such as learning,"}\n{"response": " reasoning, and problem-solving."}',
+                                "description": "Multiple NDJSON lines when stream=True and include_references=True. First line contains provisional references, subsequent lines contain response chunks, and the final response_final line contains corrected citations and final references.",
+                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf"}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt"}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines[2]."}\n{"response_final": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines[1].\\n\\n### References\\n\\n- [1] /documents/ml_basics.txt", "references": [{"reference_id": "1", "file_path": "/documents/ml_basics.txt"}]}',
                             },
                             "streaming_with_chunk_content": {
                                 "summary": "Streaming mode with chunk content (stream=true, include_chunk_content=true)",
-                                "description": "Multiple NDJSON lines when stream=True, include_references=True, and include_chunk_content=True. First line contains references with content arrays (one file may have multiple chunks), subsequent lines contain response chunks.",
+                                "description": "Multiple NDJSON lines when stream=True, include_references=True, and include_chunk_content=True. First line contains provisional references with content arrays, subsequent lines contain response chunks, and the final response_final line contains corrected citations and final references.",
                                 "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf", "content": ["Artificial Intelligence (AI) represents a transformative field...", "AI systems can be categorized into narrow AI and general AI..."]}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt", "content": ["Machine learning is a subset of AI that enables computers to learn..."]}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence."}',
                             },
                             "streaming_without_references": {
@@ -966,6 +1023,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - NDJSON format: each line is a separate JSON object
         - First line: `{"references": [...]}` (if include_references=True)
         - Subsequent lines: `{"response": "content chunk"}`
+        - Final corrected line: `{"response_final": "complete response", "references": [...]}`
+          (if include_references=True and the model streamed)
         - Error handling: `{"error": "error message"}`
 
         > If stream parameter is False, or the query hit LLM cache, complete response delivered in a single streaming message.
@@ -1111,15 +1170,27 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     response_stream = llm_response.get("response_iterator")
                     if response_stream:
                         sanitizer = StreamingCitationSanitizer(reference_id_map)
+                        sanitized_chunks: list[str] = []
                         try:
                             async for chunk in response_stream:
                                 if chunk:  # Only send non-empty content
                                     sanitized_chunk = sanitizer.feed(chunk)
                                     if sanitized_chunk:
+                                        sanitized_chunks.append(sanitized_chunk)
                                         yield f"{json.dumps({'response': sanitized_chunk})}\n"
                             remaining_content = sanitizer.flush()
                             if remaining_content:
+                                sanitized_chunks.append(remaining_content)
                                 yield f"{json.dumps({'response': remaining_content})}\n"
+                            if request.include_references:
+                                final_response, final_references = (
+                                    finalize_response_references(
+                                        "".join(sanitized_chunks), references
+                                    )
+                                )
+                                yield (
+                                    f"{json.dumps({'response_final': final_response, 'references': final_references})}\n"
+                                )
                         except Exception as e:
                             logger.error(f"Streaming error: {str(e)}")
                             yield f"{json.dumps({'error': str(e)})}\n"
@@ -1128,21 +1199,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     response_content = llm_response.get("content", "")
                     if not response_content:
                         response_content = "No relevant context found for the query."
-                    response_content = sanitize_response_citations(
-                        response_content, reference_id_map
-                    )
-                    if request.include_references and references:
-                        citation_order = _extract_citation_appearance_order(
-                            response_content
+                    if request.include_references:
+                        response_content, references = finalize_response_references(
+                            response_content, references
                         )
-                        references = _reorder_references_by_citation_order(
-                            references, citation_order
-                        )
-                        references, reordered_reference_id_map = _normalize_references(
-                            references
-                        )
+                    else:
                         response_content = sanitize_response_citations(
-                            response_content, reordered_reference_id_map
+                            response_content, reference_id_map
                         )
 
                     # Create complete response object
