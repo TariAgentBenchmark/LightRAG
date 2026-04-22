@@ -175,6 +175,7 @@ const ANSWER_DISCLAIMER =
   '以上AI解答仅作参考。最终要以厚音老师的本人的回答为准。'
 
 type AnswerSectionKey = 'body' | 'references' | 'followups'
+type StaticMarkupRenderer = typeof import('react-dom/server').renderToStaticMarkup
 
 const matchAnswerSectionHeading = (line: string): AnswerSectionKey | null => {
   const match = line.match(/^#{1,6}\s*(.+?)\s*$/)
@@ -328,6 +329,21 @@ const buildReferenceLines = (references?: ReferenceItem[]) => {
   })
 }
 
+const referenceSortValue = (reference: ReferenceItem) => {
+  const numericId = Number.parseInt(reference.reference_id, 10)
+  return Number.isNaN(numericId) ? Number.MAX_SAFE_INTEGER : numericId
+}
+
+const sortReferences = (references?: ReferenceItem[]) =>
+  [...(references ?? [])].sort((left, right) => {
+    const idDiff = referenceSortValue(left) - referenceSortValue(right)
+    if (idDiff !== 0) {
+      return idDiff
+    }
+
+    return left.reference_id.localeCompare(right.reference_id, 'zh-CN')
+  })
+
 const buildAnswerExportText = (question: string, message: ChatMessage) => {
   const sections = splitAnswerSections(stripKnownFileExtensions(message.content))
   const references = buildReferenceLines(message.references)
@@ -378,11 +394,104 @@ const decodeSharePayload = (encoded: string) => {
   }
 }
 
-const buildPrintableHtml = (question: string, message: ChatMessage) => {
+const getCitationIds = (value: unknown) =>
+  typeof value === 'string'
+    ? value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : []
+
+const renderMarkdownForPrint = (
+  renderToStaticMarkup: StaticMarkupRenderer,
+  markdown: string,
+  references?: ReferenceItem[]
+) => {
+  if (!markdown.trim()) {
+    return ''
+  }
+
+  const referenceIds = new Set((references ?? []).map((reference) => reference.reference_id))
+  const printMarkdownComponents = {
+    'citation-ref': (props: Record<string, unknown>) => {
+      const ids = getCitationIds(props['data-ids'])
+
+      return (
+        <sup className="print-citation">
+          {ids.map((id) => (
+            <span
+              key={id}
+              className={referenceIds.size > 0 && !referenceIds.has(id) ? 'missing' : undefined}
+            >
+              [{id}]
+            </span>
+          ))}
+        </sup>
+      )
+    },
+    p: ({ children }: { children?: ReactNode }) => <p>{children}</p>,
+    ul: ({ children }: { children?: ReactNode }) => <ul>{children}</ul>,
+    ol: ({ children }: { children?: ReactNode }) => <ol>{children}</ol>
+  }
+
+  return renderToStaticMarkup(
+    <div className="print-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkCitations]}
+        rehypePlugins={[rehypeRaw]}
+        components={printMarkdownComponents}
+      >
+        {markdown}
+      </ReactMarkdown>
+    </div>
+  )
+}
+
+const buildStructuredReferencesHtml = (references?: ReferenceItem[]) => {
+  const orderedReferences = sortReferences(references)
+  if (orderedReferences.length === 0) {
+    return ''
+  }
+
+  return orderedReferences
+    .map((reference) => {
+      const paragraphs = (reference.content ?? [])
+        .flatMap((snippet) => snippetParagraphs(snippet))
+        .map((paragraph) => paragraph.trim())
+        .filter(Boolean)
+      const title = summarizePath(reference.file_path)
+      const body =
+        paragraphs.length > 0
+          ? paragraphs
+              .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`)
+              .join('')
+          : '<p class="reference-empty">当前引用未包含 chunk 内容。</p>'
+
+      return `<article class="reference-entry">
+        <h3><span>[${escapeHtml(reference.reference_id)}]</span>${escapeHtml(title)}</h3>
+        ${body}
+      </article>`
+    })
+    .join('')
+}
+
+const buildPrintableHtml = (
+  renderToStaticMarkup: StaticMarkupRenderer,
+  question: string,
+  message: ChatMessage
+) => {
   const sections = splitAnswerSections(stripKnownFileExtensions(message.content))
-  const references = buildReferenceLines(message.references)
-    .map((line) => escapeHtml(line))
-    .join('<br />')
+  const answerHtml = renderMarkdownForPrint(
+    renderToStaticMarkup,
+    sections.body || message.content,
+    message.references
+  )
+  const referencesHtml = renderMarkdownForPrint(
+    renderToStaticMarkup,
+    sections.referencesMarkdown,
+    message.references
+  )
+  const structuredReferencesHtml = buildStructuredReferencesHtml(message.references)
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -390,21 +499,174 @@ const buildPrintableHtml = (question: string, message: ChatMessage) => {
   <meta charset="utf-8" />
   <title>${escapeHtml(summarizeQuestion(question || '玄德问答'))}</title>
   <style>
-    body { margin: 0; padding: 32px; color: #1f312d; background: #f8f3e8; font: 16px/1.75 "PingFang SC", "Hiragino Sans GB", sans-serif; }
-    main { max-width: 860px; margin: 0 auto; background: #fffdf8; border: 1px solid #e2d9c8; border-radius: 18px; padding: 28px; }
-    h1 { margin: 0 0 12px; font-family: "Songti SC", serif; }
-    section + section { margin-top: 24px; padding-top: 20px; border-top: 1px solid #ece2d0; }
-    .label { margin: 0 0 8px; color: #93724b; font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; }
-    .body, .references { white-space: pre-wrap; }
-    .disclaimer { margin-top: 24px; color: #60706a; font-size: 14px; }
+    @page { margin: 18mm 16mm; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 0;
+      color: #111;
+      background: #fff;
+      font: 16px/1.9 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 28px 24px;
+      background: #fff;
+    }
+    h1 {
+      margin: 0 0 22px;
+      color: #111;
+      font: 700 28px/1.35 "Songti SC", "STSong", "SimSun", serif;
+    }
+    section {
+      break-inside: avoid-page;
+    }
+    section + section {
+      margin-top: 32px;
+      padding-top: 24px;
+      border-top: 1px solid #ddd;
+    }
+    .label {
+      margin: 0 0 14px;
+      color: #111;
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.45;
+    }
+    .question {
+      white-space: pre-wrap;
+      line-height: 1.9;
+    }
+    .print-markdown {
+      color: #111;
+      line-height: 1.95;
+    }
+    .print-markdown p {
+      margin: 0 0 1.05em;
+    }
+    .print-markdown h1,
+    .print-markdown h2,
+    .print-markdown h3,
+    .print-markdown h4 {
+      color: #111;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      font-weight: 700;
+      line-height: 1.45;
+      break-after: avoid;
+    }
+    .print-markdown h1 { margin: 1.35em 0 0.65em; font-size: 24px; }
+    .print-markdown h2 { margin: 1.25em 0 0.6em; font-size: 22px; }
+    .print-markdown h3 { margin: 1.15em 0 0.55em; font-size: 20px; }
+    .print-markdown h4 { margin: 1.05em 0 0.5em; font-size: 18px; }
+    .print-markdown strong,
+    .print-markdown b {
+      color: #111;
+      font-weight: 800;
+    }
+    .print-markdown ul,
+    .print-markdown ol {
+      margin: 0.9em 0 1.2em 1.5em;
+      padding: 0;
+    }
+    .print-markdown li {
+      margin: 0.42em 0;
+      padding-left: 0.2em;
+    }
+    .print-markdown blockquote {
+      margin: 1.1em 0;
+      padding: 0.2em 0 0.2em 1em;
+      border-left: 3px solid #bbb;
+      color: #222;
+    }
+    .print-markdown code {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+    }
+    .print-markdown pre {
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+      border: 1px solid #ddd;
+      padding: 12px;
+    }
+    .print-markdown table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2em 0;
+      font-size: 14px;
+    }
+    .print-markdown th,
+    .print-markdown td {
+      border: 1px solid #ccc;
+      padding: 8px 10px;
+      vertical-align: top;
+    }
+    .print-markdown th {
+      font-weight: 700;
+    }
+    .print-citation {
+      margin: 0 0.12em;
+      vertical-align: super;
+      font-size: 0.72em;
+      line-height: 0;
+      color: #111;
+      font-weight: 800;
+    }
+    .print-citation span + span {
+      margin-left: 0.16em;
+    }
+    .print-citation .missing {
+      color: #9f1239;
+    }
+    .reference-entry {
+      margin: 0 0 24px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid #e4e4e4;
+      break-inside: avoid-page;
+    }
+    .reference-entry:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+    .reference-entry h3 {
+      margin: 0 0 10px;
+      color: #111;
+      font-size: 19px;
+      font-weight: 800;
+      line-height: 1.45;
+    }
+    .reference-entry h3 span {
+      display: inline-block;
+      margin-right: 0.55em;
+      font-weight: 900;
+    }
+    .reference-entry p {
+      margin: 0.45em 0 0;
+      color: #222;
+      line-height: 1.85;
+    }
+    .reference-empty {
+      color: #666;
+    }
+    .disclaimer {
+      margin-top: 30px;
+      color: #444;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+    @media print {
+      body { background: #fff; }
+      main { max-width: none; padding: 0; }
+    }
   </style>
 </head>
 <body>
   <main>
     <h1>玄德问答</h1>
-    ${question ? `<section><p class="label">问题</p><div class="body">${escapeHtml(question)}</div></section>` : ''}
-    <section><p class="label">回答</p><div class="body">${escapeHtml(sections.body || message.content)}</div></section>
-    ${references ? `<section><p class="label">参考资料</p><div class="references">${references}</div></section>` : ''}
+    ${question ? `<section><p class="label">问题</p><div class="question">${escapeHtml(question)}</div></section>` : ''}
+    <section><p class="label">回答</p>${answerHtml}</section>
+    ${referencesHtml ? `<section><p class="label">References</p>${referencesHtml}</section>` : ''}
+    ${structuredReferencesHtml ? `<section><p class="label">引用原文</p>${structuredReferencesHtml}</section>` : ''}
     <p class="disclaimer">${escapeHtml(ANSWER_DISCLAIMER)}</p>
   </main>
 </body>
@@ -1644,7 +1906,8 @@ export default function App() {
 
   const handleDownloadPdf = async (message: ChatMessage, relatedQuestion: string) => {
     const filename = `玄德问答-${Date.now()}.html`
-    const printableHtml = buildPrintableHtml(relatedQuestion, message)
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const printableHtml = buildPrintableHtml(renderToStaticMarkup, relatedQuestion, message)
     const htmlBlob = new Blob([printableHtml], { type: 'text/html;charset=utf-8' })
     const htmlUrl = URL.createObjectURL(htmlBlob)
     const exportWindow = window.open(htmlUrl, '_blank')
