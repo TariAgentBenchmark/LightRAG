@@ -499,36 +499,37 @@ const buildPrintableHtml = (
   <meta charset="utf-8" />
   <title>${escapeHtml(summarizeQuestion(question || '玄德问答'))}</title>
   <style>
-    @page { margin: 18mm 16mm; }
+    @page { margin: 14mm 13mm; }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       padding: 0;
       color: #111;
       background: #fff;
-      font: 16px/1.9 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      font: 16px/1.78 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     }
     main {
       max-width: 860px;
       margin: 0 auto;
-      padding: 28px 24px;
+      padding: 20px 18px;
       background: #fff;
     }
     h1 {
-      margin: 0 0 22px;
+      margin: 0 0 16px;
       color: #111;
       font: 700 28px/1.35 "Songti SC", "STSong", "SimSun", serif;
     }
     section {
-      break-inside: avoid-page;
+      break-inside: auto;
+      page-break-inside: auto;
     }
     section + section {
-      margin-top: 32px;
-      padding-top: 24px;
+      margin-top: 24px;
+      padding-top: 16px;
       border-top: 1px solid #ddd;
     }
     .label {
-      margin: 0 0 14px;
+      margin: 0 0 10px;
       color: #111;
       font-size: 18px;
       font-weight: 700;
@@ -536,14 +537,16 @@ const buildPrintableHtml = (
     }
     .question {
       white-space: pre-wrap;
-      line-height: 1.9;
+      line-height: 1.78;
     }
     .print-markdown {
       color: #111;
-      line-height: 1.95;
+      line-height: 1.82;
     }
     .print-markdown p {
-      margin: 0 0 1.05em;
+      margin: 0 0 0.82em;
+      orphans: 2;
+      widows: 2;
     }
     .print-markdown h1,
     .print-markdown h2,
@@ -555,10 +558,10 @@ const buildPrintableHtml = (
       line-height: 1.45;
       break-after: avoid;
     }
-    .print-markdown h1 { margin: 1.35em 0 0.65em; font-size: 24px; }
-    .print-markdown h2 { margin: 1.25em 0 0.6em; font-size: 22px; }
-    .print-markdown h3 { margin: 1.15em 0 0.55em; font-size: 20px; }
-    .print-markdown h4 { margin: 1.05em 0 0.5em; font-size: 18px; }
+    .print-markdown h1 { margin: 1.05em 0 0.5em; font-size: 24px; }
+    .print-markdown h2 { margin: 1em 0 0.48em; font-size: 22px; }
+    .print-markdown h3 { margin: 0.9em 0 0.45em; font-size: 20px; }
+    .print-markdown h4 { margin: 0.82em 0 0.42em; font-size: 18px; }
     .print-markdown strong,
     .print-markdown b {
       color: #111;
@@ -566,15 +569,15 @@ const buildPrintableHtml = (
     }
     .print-markdown ul,
     .print-markdown ol {
-      margin: 0.9em 0 1.2em 1.5em;
+      margin: 0.65em 0 0.9em 1.5em;
       padding: 0;
     }
     .print-markdown li {
-      margin: 0.42em 0;
+      margin: 0.28em 0;
       padding-left: 0.2em;
     }
     .print-markdown blockquote {
-      margin: 1.1em 0;
+      margin: 0.85em 0;
       padding: 0.2em 0 0.2em 1em;
       border-left: 3px solid #bbb;
       color: #222;
@@ -592,7 +595,7 @@ const buildPrintableHtml = (
     .print-markdown table {
       width: 100%;
       border-collapse: collapse;
-      margin: 1.2em 0;
+      margin: 0.9em 0;
       font-size: 14px;
     }
     .print-markdown th,
@@ -619,21 +622,23 @@ const buildPrintableHtml = (
       color: #9f1239;
     }
     .reference-entry {
-      margin: 0 0 24px;
-      padding-bottom: 18px;
+      margin: 0 0 18px;
+      padding-bottom: 12px;
       border-bottom: 1px solid #e4e4e4;
-      break-inside: avoid-page;
+      break-inside: auto;
+      page-break-inside: auto;
     }
     .reference-entry:last-child {
       border-bottom: 0;
       padding-bottom: 0;
     }
     .reference-entry h3 {
-      margin: 0 0 10px;
+      margin: 0 0 8px;
       color: #111;
       font-size: 19px;
       font-weight: 800;
       line-height: 1.45;
+      break-after: avoid;
     }
     .reference-entry h3 span {
       display: inline-block;
@@ -641,18 +646,20 @@ const buildPrintableHtml = (
       font-weight: 900;
     }
     .reference-entry p {
-      margin: 0.45em 0 0;
+      margin: 0.32em 0 0;
       color: #222;
-      line-height: 1.85;
+      line-height: 1.72;
+      orphans: 2;
+      widows: 2;
     }
     .reference-empty {
       color: #666;
     }
     .disclaimer {
-      margin-top: 30px;
+      margin-top: 22px;
       color: #444;
       font-size: 14px;
-      line-height: 1.8;
+      line-height: 1.65;
     }
     @media print {
       body { background: #fff; }
