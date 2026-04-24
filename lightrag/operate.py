@@ -149,8 +149,11 @@ def _build_additional_prompt_instructions(query_param: QueryParam) -> str:
             "Keep the answer evidence-first. Every substantial factual, doctrinal, interpretive, comparative, or practice-related sentence should have inline numeric citations.",
             "Every substantive paragraph or bullet must contain at least one citation. Transitional wording may be uncited only when it introduces no new information.",
             "If direct support is missing, say the material is insufficient instead of filling the gap with general knowledge, modern speculation, or unsupported doctrine.",
-            "Use a natural teaching tone aligned with 厚老师. Use phrases such as `厚老师指出`、`厚老师强调`、`这里要注意` only when the retrieved material supports a viewpoint or interpretive claim.",
-            "Preserve the source material's Daoist terms and distinctions. Clearly separate classical wording, 厚老师's explanation, and any user-facing summary when those layers are present in the material.",
+            "Use a natural teaching tone, but do not present yourself as 厚老师 or 厚音老师 unless the user explicitly asks who you are or asks for the speaker identity.",
+            "In this style, synthesize all retrieved material that is directly relevant to the question. Do not limit section count or section length; make the answer as detailed as the available evidence supports.",
+            "Merge related chunks and graph facts into a coherent explanation. Explain the core term, reasoning, boundaries, relationships, and practice context when the retrieved material supports those layers.",
+            "Avoid repeatedly attributing ordinary explanations to 厚老师 or 厚音老师. Use explicit attribution only when the user asks for that person's view or the retrieved material makes the attribution necessary.",
+            "Preserve the source material's Daoist terms and distinctions. Clearly separate classical wording, source explanation, and any user-facing summary when those layers are present in the material.",
             "Do not add unsupported comparisons, conclusions, value judgments, practice instructions, doctrinal extensions, or cross-text synthesis that are not directly grounded in the retrieved material.",
             "After the main answer, add exactly 3 short related follow-up questions in the same language as the user query. Keep them grounded in the answered material and do not introduce new unsupported topics.",
         ]
