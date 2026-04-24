@@ -1,5 +1,7 @@
 export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass'
 
+export type AnswerStyle = 'concise' | 'grounded_rich'
+
 export type ReferenceItem = {
   reference_id: string
   file_path: string
@@ -38,8 +40,7 @@ export type AppConfig = {
   apiKey: string
   bearerToken: string
   mode: QueryMode
-  topK: number
-  historyTurns: number
+  answerStyle: AnswerStyle
   speechSettings: SpeechSettings
 }
 
@@ -114,9 +115,10 @@ export type StreamEvent =
 export type QueryRequest = {
   query: string
   mode: QueryMode
+  answer_style?: AnswerStyle
   stream: boolean
-  top_k?: number
   include_references: boolean
   include_chunk_content: boolean
   conversation_history: Array<{ role: 'user' | 'assistant'; content: string }>
+  use_conversation_history?: boolean
 }

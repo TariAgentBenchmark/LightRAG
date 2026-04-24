@@ -16,8 +16,7 @@ export const defaultConfig: AppConfig = {
   apiKey: '',
   bearerToken: '',
   mode: 'mix',
-  topK: 12,
-  historyTurns: 4,
+  answerStyle: 'grounded_rich',
   speechSettings: {}
 }
 

@@ -79,7 +79,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False
 
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _DEFINITION_QUERY_RE = re.compile(
-    r"(是什么|什么意思|含义|定义|概念|如何理解|指的是|有何区别|区别是什么|是什么关系|定义是什么|"
+    r"(是什么|什么是|什么叫|什么意思|含义|定义|概念|如何理解|指的是|有何区别|区别是什么|是什么关系|定义是什么|"
     r"\bwhat\s+is\b|\bdefine\b|\bdefinition\b|\bmeaning\b|\bmean\b|\bdifference\b|\bconcept\b)",
     re.IGNORECASE,
 )
@@ -89,7 +89,33 @@ def _contains_cjk(text: str) -> bool:
     return bool(text and _CJK_CHAR_RE.search(text))
 
 
-QUERY_RESPONSE_PROMPT_VERSION = "2026-04-09-grounded-followups-v1"
+QUERY_RESPONSE_PROMPT_VERSION = "2026-04-25-daoist-style-retrieval-v1"
+
+ANSWER_STYLE_CONCISE = "concise"
+ANSWER_STYLE_GROUNDED_RICH = "grounded_rich"
+
+ANSWER_STYLE_RETRIEVAL_LIMITS = {
+    ANSWER_STYLE_CONCISE: {
+        "top_k": 14,
+        "chunk_top_k": 24,
+        "max_entity_tokens": 5000,
+        "max_relation_tokens": 7000,
+        "max_total_tokens": 32000,
+    },
+    ANSWER_STYLE_GROUNDED_RICH: {
+        "top_k": 18,
+        "chunk_top_k": 32,
+        "max_entity_tokens": 7000,
+        "max_relation_tokens": 10000,
+        "max_total_tokens": 52000,
+    },
+}
+
+
+def _normalize_answer_style(answer_style: str | None) -> str:
+    if answer_style == ANSWER_STYLE_CONCISE:
+        return ANSWER_STYLE_CONCISE
+    return ANSWER_STYLE_GROUNDED_RICH
 
 
 def _is_definition_query(query: str) -> bool:
@@ -103,23 +129,38 @@ def _get_effective_history_messages(query_param: QueryParam) -> list[dict[str, s
 
 
 def _build_additional_prompt_instructions(query_param: QueryParam) -> str:
-    instructions: list[str] = [
-        "Answer directly. Avoid self-referential subject expressions such as `我`、`本人`、`厚老师`、`厚音老师`, unless the user explicitly asks for speaker identity.",
-        "Keep the answer evidence-first. Every substantial factual sentence should have inline numeric citations.",
-        "If direct support is missing, say the material is insufficient instead of filling the gap with general knowledge.",
-        "Prefer neutral declarative sentences. Do not add speaker attribution or teaching persona wording unless the user explicitly asks for a viewpoint.",
-        "Do not add unsupported comparisons, conclusions, value judgments, extensions, or summaries that are not directly grounded in the retrieved material.",
-        "When the material supports several key points, cover the major supported points explicitly instead of compressing them into a looser paraphrase.",
-        "Prefer the source material's own terminology and distinctions. Do not rewrite core concepts into broader but less precise wording.",
-        "After the main answer, add exactly 3 short related follow-up questions in the same language as the user query. Keep them grounded in the answered material and do not introduce new unsupported topics.",
-    ]
+    answer_style = _normalize_answer_style(query_param.answer_style)
+    if answer_style == ANSWER_STYLE_CONCISE:
+        instructions: list[str] = [
+            "Answer as a concise grounded Daoist Q&A, not as a generic encyclopedia summary.",
+            "Start with the direct answer and use only the minimum distinctions needed to avoid misunderstanding.",
+            "Prefer 1 to 3 short paragraphs or a compact bullet list. Do not force section headings unless the question clearly needs them.",
+            "Keep the answer evidence-first. Every substantial factual, doctrinal, interpretive, comparative, or practice-related sentence should have inline numeric citations.",
+            "Every substantive paragraph or bullet must contain at least one citation. Transitional wording may be uncited only when it introduces no new information.",
+            "If direct support is missing, say the material is insufficient instead of filling the gap with general knowledge, modern speculation, or unsupported doctrine.",
+            "Preserve the source material's Daoist terms and distinctions, but avoid lengthy elaboration unless needed for accuracy.",
+            "Do not add unsupported comparisons, conclusions, value judgments, practice instructions, doctrinal extensions, or cross-text synthesis that are not directly grounded in the retrieved material.",
+            "After the main answer, add exactly 3 short related follow-up questions in the same language as the user query. Keep them grounded in the answered material and do not introduce new unsupported topics.",
+        ]
+    else:
+        instructions = [
+            "Answer as a grounded Daoist Q&A, not as a generic encyclopedia summary.",
+            "Start with the direct answer, then unfold only the distinctions, rationale, practice context, or interpretive layers that are directly supported by the retrieved material.",
+            "Keep the answer evidence-first. Every substantial factual, doctrinal, interpretive, comparative, or practice-related sentence should have inline numeric citations.",
+            "Every substantive paragraph or bullet must contain at least one citation. Transitional wording may be uncited only when it introduces no new information.",
+            "If direct support is missing, say the material is insufficient instead of filling the gap with general knowledge, modern speculation, or unsupported doctrine.",
+            "Use a natural teaching tone aligned with 厚老师. Use phrases such as `厚老师指出`、`厚老师强调`、`这里要注意` only when the retrieved material supports a viewpoint or interpretive claim.",
+            "Preserve the source material's Daoist terms and distinctions. Clearly separate classical wording, 厚老师's explanation, and any user-facing summary when those layers are present in the material.",
+            "Do not add unsupported comparisons, conclusions, value judgments, practice instructions, doctrinal extensions, or cross-text synthesis that are not directly grounded in the retrieved material.",
+            "After the main answer, add exactly 3 short related follow-up questions in the same language as the user query. Keep them grounded in the answered material and do not introduce new unsupported topics.",
+        ]
 
     if query_param.is_definition_query:
         instructions.extend(
             [
-                "Treat this as a definition-first question.",
-                "Start with the most directly supported definition.",
-                "Then list the directly supported key components or distinctions without omitting major supported points.",
+                "Treat this as a Daoist concept explanation question.",
+                "Start with the most directly supported definition or core meaning.",
+                "Then explain the directly supported key terms, contrasts, practice implications, or interpretive boundaries without omitting major supported points.",
             ]
         )
 
@@ -174,9 +215,41 @@ def _prepare_effective_query_param(
 ) -> QueryParam:
     effective_param = replace(query_param)
     effective_param.retrieval_query = retrieval_query
+    effective_param.answer_style = _normalize_answer_style(query_param.answer_style)
     effective_param.is_definition_query = _is_definition_query(
         retrieval_query or query_param.retrieval_query or ""
     )
+
+    if effective_param.mode != "bypass":
+        limits = ANSWER_STYLE_RETRIEVAL_LIMITS[effective_param.answer_style]
+        if effective_param.answer_style == ANSWER_STYLE_CONCISE:
+            effective_param.top_k = min(effective_param.top_k, limits["top_k"])
+            effective_param.chunk_top_k = min(
+                effective_param.chunk_top_k, limits["chunk_top_k"]
+            )
+            effective_param.max_entity_tokens = min(
+                effective_param.max_entity_tokens, limits["max_entity_tokens"]
+            )
+            effective_param.max_relation_tokens = min(
+                effective_param.max_relation_tokens, limits["max_relation_tokens"]
+            )
+            effective_param.max_total_tokens = min(
+                effective_param.max_total_tokens, limits["max_total_tokens"]
+            )
+        else:
+            effective_param.top_k = max(effective_param.top_k, limits["top_k"])
+            effective_param.chunk_top_k = max(
+                effective_param.chunk_top_k, limits["chunk_top_k"]
+            )
+            effective_param.max_entity_tokens = max(
+                effective_param.max_entity_tokens, limits["max_entity_tokens"]
+            )
+            effective_param.max_relation_tokens = max(
+                effective_param.max_relation_tokens, limits["max_relation_tokens"]
+            )
+            effective_param.max_total_tokens = max(
+                effective_param.max_total_tokens, limits["max_total_tokens"]
+            )
 
     if effective_param.is_definition_query:
         effective_param.top_k = effective_param.top_k + min(
@@ -3881,6 +3954,7 @@ async def kg_query(
         hl_keywords_str,
         ll_keywords_str,
         effective_query_param.user_prompt or "",
+        effective_query_param.answer_style,
         effective_query_param.enable_rerank,
         effective_query_param.use_conversation_history,
         effective_query_param.is_definition_query,
@@ -3919,6 +3993,7 @@ async def kg_query(
                 "hl_keywords": hl_keywords_str,
                 "ll_keywords": ll_keywords_str,
                 "user_prompt": effective_query_param.user_prompt or "",
+                "answer_style": effective_query_param.answer_style,
                 "enable_rerank": effective_query_param.enable_rerank,
                 "use_conversation_history": effective_query_param.use_conversation_history,
                 "retrieval_query": retrieval_query,
@@ -4928,6 +5003,7 @@ async def _build_query_context(
     raw_data["metadata"]["query_analysis"] = {
         "retrieval_query": query_param.retrieval_query or query,
         "is_definition_query": query_param.is_definition_query,
+        "answer_style": query_param.answer_style,
         "use_conversation_history": query_param.use_conversation_history,
         "retrieval_language": query_param.retrieval_language,
     }
@@ -5684,6 +5760,7 @@ async def naive_query(
     raw_data["metadata"]["query_analysis"] = {
         "retrieval_query": effective_query_param.retrieval_query or retrieval_query,
         "is_definition_query": effective_query_param.is_definition_query,
+        "answer_style": effective_query_param.answer_style,
         "use_conversation_history": effective_query_param.use_conversation_history,
         "retrieval_language": effective_query_param.retrieval_language,
     }
@@ -5745,6 +5822,7 @@ async def naive_query(
         effective_query_param.max_relation_tokens,
         effective_query_param.max_total_tokens,
         effective_query_param.user_prompt or "",
+        effective_query_param.answer_style,
         effective_query_param.enable_rerank,
         effective_query_param.use_conversation_history,
         effective_query_param.is_definition_query,
@@ -5779,6 +5857,7 @@ async def naive_query(
                 "max_relation_tokens": effective_query_param.max_relation_tokens,
                 "max_total_tokens": effective_query_param.max_total_tokens,
                 "user_prompt": effective_query_param.user_prompt or "",
+                "answer_style": effective_query_param.answer_style,
                 "enable_rerank": effective_query_param.enable_rerank,
                 "use_conversation_history": effective_query_param.use_conversation_history,
                 "retrieval_query": retrieval_query,

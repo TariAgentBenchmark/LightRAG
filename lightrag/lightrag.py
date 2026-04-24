@@ -2746,6 +2746,7 @@ class LightRAG:
             history_turns=param.history_turns,
             model_func=param.model_func,
             user_prompt=param.user_prompt,
+            answer_style=param.answer_style,
             enable_rerank=param.enable_rerank,
             use_conversation_history=param.use_conversation_history,
             retrieval_language=param.retrieval_language,

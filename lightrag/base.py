@@ -81,6 +81,9 @@ class TextChunkSchema(TypedDict):
 T = TypeVar("T")
 
 
+AnswerStyle = Literal["concise", "grounded_rich"]
+
+
 @dataclass
 class QueryParam:
     """Configuration parameters for query execution in LightRAG."""
@@ -156,6 +159,9 @@ class QueryParam:
     Addition instructions for LLM. If provided, this will be inject into the prompt template.
     It's purpose is the let user customize the way LLM generate the response.
     """
+
+    answer_style: AnswerStyle = "grounded_rich"
+    """Controls final answer depth and retrieval budget. Use 'concise' for shorter answers or 'grounded_rich' for fuller grounded explanation."""
 
     enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.

@@ -443,6 +443,11 @@ class QueryRequest(BaseModel):
         description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
     )
 
+    answer_style: Optional[Literal["concise", "grounded_rich"]] = Field(
+        default=None,
+        description="Final answer style. 'concise' returns a shorter grounded answer; 'grounded_rich' returns a fuller Daoist explanation with stricter citation density.",
+    )
+
     enable_rerank: Optional[bool] = Field(
         default=None,
         description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
