@@ -386,6 +386,10 @@ select:focus-visible {
   flex: 0 0 auto;
 }
 
+.mobile-action-label {
+  display: none;
+}
+
 .text-button:hover:not(:disabled) {
   color: var(--accent-strong);
   text-decoration: underline;
@@ -1822,39 +1826,43 @@ select:focus-visible {
   .composer-footer {
     flex-direction: column;
     align-items: stretch;
+    min-width: 0;
   }
 
   .composer-actions {
     display: flex;
     flex-wrap: nowrap;
-    gap: 8px;
+    gap: 6px;
     justify-content: stretch;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    padding-bottom: 1px;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .composer-actions::-webkit-scrollbar {
-    display: none;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .composer-actions .primary-action,
   .composer-actions .secondary-action {
-    flex: 1 0 96px;
+    flex: 1 1 0;
     width: auto;
-    min-height: 42px;
+    min-height: 40px;
     min-width: 0;
-    padding: 0.62rem 0.7rem;
-    font-size: 0.9rem;
+    padding: 0.58rem 0.45rem;
+    font-size: 0.84rem;
     line-height: 1.1;
     white-space: nowrap;
   }
 
   .composer-actions .button-icon {
-    width: 1em;
-    height: 1em;
+    width: 0.96em;
+    height: 0.96em;
+  }
+
+  .composer-actions .desktop-action-label {
+    display: none;
+  }
+
+  .composer-actions .mobile-action-label {
+    display: inline;
   }
 
   .sheet-content blockquote {

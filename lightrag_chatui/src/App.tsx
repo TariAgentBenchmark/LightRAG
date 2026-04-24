@@ -2837,7 +2837,12 @@ export default function App() {
                 title={audioUploadSupportError ?? undefined}
               >
                 <ButtonIcon name={isUploadingAudio ? 'refresh' : 'upload'} />
-                {isUploadingAudio ? '识别中…' : '上传音频'}
+                <span className="desktop-action-label">
+                  {isUploadingAudio ? '识别中…' : '上传音频'}
+                </span>
+                <span className="mobile-action-label">
+                  {isUploadingAudio ? '识别' : '上传'}
+                </span>
               </button>
               <button
                 type="button"
@@ -2851,7 +2856,12 @@ export default function App() {
                 title={voiceInputSupportError ?? undefined}
               >
                 <ButtonIcon name={isRecording ? 'stop' : 'mic'} />
-                {isRecording ? '停止收音' : '话筒输入'}
+                <span className="desktop-action-label">
+                  {isRecording ? '停止收音' : '话筒输入'}
+                </span>
+                <span className="mobile-action-label">
+                  {isRecording ? '停止' : '话筒'}
+                </span>
               </button>
               {isSubmitting && (
                 <button
@@ -2860,12 +2870,17 @@ export default function App() {
                   onClick={() => abortRef.current?.abort()}
                 >
                   <ButtonIcon name="stop" />
-                  停止
+                  <span>停止</span>
                 </button>
               )}
               <button type="submit" className="primary-action" disabled={isSubmitting}>
                 <ButtonIcon name={isSubmitting ? 'refresh' : 'send'} />
-                {isSubmitting ? '生成中…' : '发问'}
+                <span className="desktop-action-label">
+                  {isSubmitting ? '生成中…' : '发问'}
+                </span>
+                <span className="mobile-action-label">
+                  {isSubmitting ? '生成' : '发问'}
+                </span>
               </button>
             </div>
           </div>
