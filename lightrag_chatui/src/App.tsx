@@ -935,6 +935,149 @@ const highlightEntityTerms = (text: string, entityTerms?: string[]) => {
   })
 }
 
+type ButtonIconName =
+  | 'check'
+  | 'copy'
+  | 'file'
+  | 'list'
+  | 'mic'
+  | 'plus'
+  | 'refresh'
+  | 'reset'
+  | 'send'
+  | 'share'
+  | 'stop'
+  | 'trash'
+  | 'upload'
+  | 'volume'
+
+const ButtonIcon = ({ name }: { name: ButtonIconName }) => {
+  const commonProps = {
+    className: 'button-icon',
+    width: 17,
+    height: 17,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true
+  }
+
+  switch (name) {
+    case 'check':
+      return (
+        <svg {...commonProps}>
+          <path d="M20 6 9 17l-5-5" />
+        </svg>
+      )
+    case 'copy':
+      return (
+        <svg {...commonProps}>
+          <rect x="9" y="9" width="11" height="11" rx="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      )
+    case 'file':
+      return (
+        <svg {...commonProps}>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+          <path d="M14 2v6h6" />
+          <path d="M8 13h8" />
+          <path d="M8 17h5" />
+        </svg>
+      )
+    case 'list':
+      return (
+        <svg {...commonProps}>
+          <path d="M8 6h13" />
+          <path d="M8 12h13" />
+          <path d="M8 18h13" />
+          <path d="M3 6h.01" />
+          <path d="M3 12h.01" />
+          <path d="M3 18h.01" />
+        </svg>
+      )
+    case 'mic':
+      return (
+        <svg {...commonProps}>
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+          <path d="M12 19v3" />
+        </svg>
+      )
+    case 'plus':
+      return (
+        <svg {...commonProps}>
+          <path d="M12 5v14" />
+          <path d="M5 12h14" />
+        </svg>
+      )
+    case 'refresh':
+      return (
+        <svg {...commonProps}>
+          <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4" />
+          <path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4" />
+        </svg>
+      )
+    case 'reset':
+      return (
+        <svg {...commonProps}>
+          <path d="M3 12a9 9 0 1 0 3-6.7" />
+          <path d="M3 4v6h6" />
+        </svg>
+      )
+    case 'send':
+      return (
+        <svg {...commonProps}>
+          <path d="m22 2-7 20-4-9-9-4Z" />
+          <path d="M22 2 11 13" />
+        </svg>
+      )
+    case 'share':
+      return (
+        <svg {...commonProps}>
+          <circle cx="18" cy="5" r="3" />
+          <circle cx="6" cy="12" r="3" />
+          <circle cx="18" cy="19" r="3" />
+          <path d="m8.6 13.5 6.8 4" />
+          <path d="m15.4 6.5-6.8 4" />
+        </svg>
+      )
+    case 'stop':
+      return (
+        <svg {...commonProps}>
+          <rect x="6" y="6" width="12" height="12" rx="2" />
+        </svg>
+      )
+    case 'trash':
+      return (
+        <svg {...commonProps}>
+          <path d="M3 6h18" />
+          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          <path d="M19 6 18 20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+        </svg>
+      )
+    case 'upload':
+      return (
+        <svg {...commonProps}>
+          <path d="M12 3v12" />
+          <path d="m7 8 5-5 5 5" />
+          <path d="M5 21h14" />
+        </svg>
+      )
+    case 'volume':
+      return (
+        <svg {...commonProps}>
+          <path d="M11 5 6 9H3v6h3l5 4Z" />
+          <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+          <path d="M19 5a9 9 0 0 1 0 14" />
+        </svg>
+      )
+  }
+}
+
 type CitationRefProps = {
   ids: string[]
   references: ReferenceItem[]
@@ -1126,7 +1269,7 @@ const MessageCard = ({
                     onClick={() => onToggleSpeak(message)}
                     disabled={isSpeechLoading && !isSpeaking}
                   >
-                    <span aria-hidden="true">📢</span>
+                    <ButtonIcon name={isSpeaking ? 'stop' : 'volume'} />
                     {isSpeechLoading && !isSpeaking
                       ? '朗读准备中…'
                       : isSpeaking
@@ -1140,7 +1283,7 @@ const MessageCard = ({
                     className="message-utility-button"
                     onClick={() => onShare(message, relatedQuestion)}
                   >
-                    <span aria-hidden="true">🔗</span>
+                    <ButtonIcon name="share" />
                     分享
                   </button>
                   <button
@@ -1148,7 +1291,7 @@ const MessageCard = ({
                     className="message-utility-button"
                     onClick={() => onDownloadPdf(message, relatedQuestion)}
                   >
-                    <span aria-hidden="true">🗎</span>
+                    <ButtonIcon name="file" />
                     PDF
                   </button>
                   <button
@@ -1156,7 +1299,7 @@ const MessageCard = ({
                     className="message-utility-button"
                     onClick={() => onCopy(message, relatedQuestion)}
                   >
-                    <span aria-hidden="true">⧉</span>
+                    <ButtonIcon name="copy" />
                     复制
                   </button>
                 </div>
@@ -1232,6 +1375,38 @@ export default function App() {
   const uiStatusTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const voiceInputSupportError = getPCMRecorderSupportError()
   const audioUploadSupportError = getAudioProcessingSupportError()
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return
+    }
+
+    let frameId = 0
+    const syncViewportHeight = () => {
+      window.cancelAnimationFrame(frameId)
+      frameId = window.requestAnimationFrame(() => {
+        const height = window.visualViewport?.height ?? window.innerHeight
+        document.documentElement.style.setProperty('--app-height', `${height}px`)
+        if (document.activeElement === textareaRef.current) {
+          textareaRef.current?.scrollIntoView({ block: 'nearest' })
+        }
+      })
+    }
+
+    syncViewportHeight()
+    window.addEventListener('resize', syncViewportHeight)
+    window.addEventListener('orientationchange', syncViewportHeight)
+    window.visualViewport?.addEventListener('resize', syncViewportHeight)
+    window.visualViewport?.addEventListener('scroll', syncViewportHeight)
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.removeEventListener('resize', syncViewportHeight)
+      window.removeEventListener('orientationchange', syncViewportHeight)
+      window.visualViewport?.removeEventListener('resize', syncViewportHeight)
+      window.visualViewport?.removeEventListener('scroll', syncViewportHeight)
+    }
+  }, [])
 
   useEffect(() => {
     saveConfig(config)
@@ -2462,6 +2637,7 @@ export default function App() {
         </div>
 
         <button className="primary-action" onClick={resetConversation}>
+          <ButtonIcon name="plus" />
           新建一卷
         </button>
 
@@ -2477,6 +2653,7 @@ export default function App() {
                 closeMobileDrawer()
               }}
             >
+              <ButtonIcon name="trash" />
               清空
             </button>
           </div>
@@ -2576,6 +2753,7 @@ export default function App() {
                   className="text-button"
                   onClick={() => setStarterPromptDeck(pickStarterPromptDeck())}
                 >
+                  <ButtonIcon name="refresh" />
                   换一组
                 </button>
               </div>
@@ -2658,6 +2836,7 @@ export default function App() {
                 disabled={isSubmitting || isRecording || isUploadingAudio || Boolean(audioUploadSupportError)}
                 title={audioUploadSupportError ?? undefined}
               >
+                <ButtonIcon name={isUploadingAudio ? 'refresh' : 'upload'} />
                 {isUploadingAudio ? '识别中…' : '上传音频'}
               </button>
               <button
@@ -2671,6 +2850,7 @@ export default function App() {
                 }
                 title={voiceInputSupportError ?? undefined}
               >
+                <ButtonIcon name={isRecording ? 'stop' : 'mic'} />
                 {isRecording ? '停止收音' : '话筒输入'}
               </button>
               {isSubmitting && (
@@ -2679,10 +2859,12 @@ export default function App() {
                   className="secondary-action"
                   onClick={() => abortRef.current?.abort()}
                 >
+                  <ButtonIcon name="stop" />
                   停止
                 </button>
               )}
               <button type="submit" className="primary-action" disabled={isSubmitting}>
+                <ButtonIcon name={isSubmitting ? 'refresh' : 'send'} />
                 {isSubmitting ? '生成中…' : '发问'}
               </button>
             </div>
@@ -2739,6 +2921,7 @@ export default function App() {
                   onClick={() => void playVoicePreview(currentPreviewSpeakerId)}
                   disabled={!currentPreviewSpeakerId || isVoicePreviewBusy(currentPreviewSpeakerId)}
                 >
+                  <ButtonIcon name="volume" />
                   {getVoicePreviewLabel(currentPreviewSpeakerId)}
                 </button>
               </div>
@@ -2757,6 +2940,7 @@ export default function App() {
                       setVoicePickerOpen(true)
                     }}
                   >
+                    <ButtonIcon name="list" />
                     查看全部音色
                   </button>
                 </div>
@@ -2786,6 +2970,7 @@ export default function App() {
                           onClick={() => void playVoicePreview(voice.speaker_id)}
                           disabled={isVoicePreviewBusy(voice.speaker_id)}
                         >
+                          <ButtonIcon name="volume" />
                           {previewLabel}
                         </button>
                       </div>
@@ -2880,6 +3065,7 @@ export default function App() {
 
             <div className="settings-modal-actions">
               <button type="button" className="secondary-action" onClick={resetSpeechSettings}>
+                <ButtonIcon name="reset" />
                 恢复默认设置
               </button>
               <button
@@ -2887,6 +3073,7 @@ export default function App() {
                 className="primary-action"
                 onClick={closeSettings}
               >
+                <ButtonIcon name="check" />
                 完成
               </button>
             </div>
@@ -2970,6 +3157,7 @@ export default function App() {
                     onClick={() => void playVoicePreview(defaultSpeakerId || undefined)}
                     disabled={!defaultSpeakerId || isVoicePreviewBusy(defaultSpeakerId)}
                   >
+                    <ButtonIcon name="volume" />
                     {getVoicePreviewLabel(defaultSpeakerId || undefined)}
                   </button>
                 </div>
@@ -3001,6 +3189,7 @@ export default function App() {
                           onClick={() => void playVoicePreview(voice.speaker_id)}
                           disabled={isVoicePreviewBusy(voice.speaker_id)}
                         >
+                          <ButtonIcon name="volume" />
                           {previewLabel}
                         </button>
                       </div>
@@ -3040,7 +3229,13 @@ export default function App() {
                 playingAudioTarget !== `reference:${hoverMessage.id}:${hoverReference.reference_id}`
               }
             >
-              <span aria-hidden="true">📢</span>
+              <ButtonIcon
+                name={
+                  playingAudioTarget === `reference:${hoverMessage.id}:${hoverReference.reference_id}`
+                    ? 'stop'
+                    : 'volume'
+                }
+              />
               {speechLoadingTarget === `reference:${hoverMessage.id}:${hoverReference.reference_id}` &&
               playingAudioTarget !== `reference:${hoverMessage.id}:${hoverReference.reference_id}`
                 ? '朗读准备中…'
@@ -3093,7 +3288,13 @@ export default function App() {
                     playingAudioTarget !== `reference:${touchMessage.id}:${touchMessageReference.reference_id}`
                   }
                 >
-                  <span aria-hidden="true">📢</span>
+                  <ButtonIcon
+                    name={
+                      playingAudioTarget === `reference:${touchMessage.id}:${touchMessageReference.reference_id}`
+                        ? 'stop'
+                        : 'volume'
+                    }
+                  />
                   {speechLoadingTarget === `reference:${touchMessage.id}:${touchMessageReference.reference_id}` &&
                   playingAudioTarget !== `reference:${touchMessage.id}:${touchMessageReference.reference_id}`
                     ? '朗读准备中…'
