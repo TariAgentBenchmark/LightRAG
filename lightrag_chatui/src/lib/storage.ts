@@ -17,7 +17,8 @@ export const defaultConfig: AppConfig = {
   bearerToken: '',
   mode: 'mix',
   topK: 12,
-  historyTurns: 4
+  historyTurns: 4,
+  speechSettings: {}
 }
 
 export const loadConfig = (): AppConfig => {
@@ -35,7 +36,11 @@ export const loadConfig = (): AppConfig => {
     return {
       ...defaultConfig,
       ...parsed,
-      baseUrl: defaultConfig.baseUrl
+      baseUrl: defaultConfig.baseUrl,
+      speechSettings: {
+        ...defaultConfig.speechSettings,
+        ...(parsed.speechSettings ?? {})
+      }
     }
   } catch {
     return defaultConfig

@@ -3,7 +3,13 @@ import ReactMarkdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
 import { streamQuery } from './api/lightrag'
-import { createSpeechAsrSocket, synthesizeSpeech } from './api/speech'
+import { createShare, fetchShare } from './api/share'
+import {
+  createSpeechAsrSocket,
+  fetchSpeechStatus,
+  fetchSpeechVoices,
+  synthesizeSpeech
+} from './api/speech'
 import {
   convertAudioFileToPCMChunks,
   getAudioProcessingSupportError,
@@ -16,7 +22,11 @@ import type {
   AppConfig,
   ChatMessage,
   ChatSession,
-  ReferenceItem
+  ReferenceItem,
+  SharePayload,
+  SpeechProviderConfig,
+  SpeechSettings,
+  SpeechVoiceOption
 } from './types/chat'
 
 const makeId = () => {
@@ -70,10 +80,85 @@ const STARTER_PROMPT_DECKS = [
 ]
 
 const STARTER_PROMPT_COUNT = 6
+const TTS_PREVIEW_TEXT = '道在日用之间，贵在清静自然。'
+
+const VOICE_FILTERS = [
+  { key: 'recommended', label: '推荐' },
+  { key: 'female', label: '女声' },
+  { key: 'male', label: '男声' },
+  { key: 'reading', label: '有声阅读' },
+  { key: 'roleplay', label: '角色扮演' },
+  { key: 'multilingual', label: '多语种' },
+  { key: 'all', label: '全部' }
+] as const
+
+type VoiceFilterKey = (typeof VOICE_FILTERS)[number]['key']
+
+const VOICE_TAGLINES: Record<string, string> = {
+  zh_female_xiaohe_uranus_bigtts: '稳重自然，适合默认问答',
+  zh_female_cancan_uranus_bigtts: '知性清晰，表达有亲和力',
+  zh_female_wenroushunv_uranus_bigtts: '温柔沉静，适合慢节奏解读',
+  zh_female_gufengshaoyu_uranus_bigtts: '国风气质，适合经典语境',
+  zh_female_vv_uranus_bigtts: '自然耐听，适合长段朗读'
+}
+
+const formatRatio = (value: number) =>
+  value.toFixed(1).replace(/\.0$/, '')
+
+const describeSpeedRatio = (value: number) => {
+  if (value < 0.8) {
+    return '慢速'
+  }
+  if (value > 1.3) {
+    return '快速'
+  }
+  if (value > 1.1) {
+    return '稍快'
+  }
+  return '自然'
+}
+
+const describeVolumeRatio = (value: number) => {
+  if (value < 0.9) {
+    return '轻一些'
+  }
+  if (value > 1.1) {
+    return '响亮'
+  }
+  return '标准'
+}
+
+const describePitchRatio = (value: number) => {
+  if (value < 0.9) {
+    return '低沉'
+  }
+  if (value > 1.1) {
+    return '明亮'
+  }
+  return '自然'
+}
+
+const getVoiceGenderLabel = (voice: SpeechVoiceOption) => {
+  if (voice.gender === 'female') {
+    return '女声'
+  }
+  if (voice.gender === 'male') {
+    return '男声'
+  }
+  return '音色'
+}
+
+const getVoiceTagline = (voice: SpeechVoiceOption) =>
+  VOICE_TAGLINES[voice.speaker_id] ?? `${voice.category} · ${voice.language}`
+
+const getVoiceMeta = (voice: SpeechVoiceOption) =>
+  [voice.category, getVoiceGenderLabel(voice), voice.language, voice.recommended ? '推荐' : '']
+    .filter(Boolean)
+    .join(' · ')
 
 const summarizePath = (filePath: string) => {
   const pieces = filePath.split('/').filter(Boolean)
-  const filename = pieces.at(-1) ?? filePath
+  const filename = pieces.length > 0 ? pieces[pieces.length - 1] : filePath
   return filename.replace(/\.[^.]+$/, '')
 }
 
@@ -114,16 +199,37 @@ const toSpeakableText = (text: string) =>
     .replace(/\s{2,}/g, ' ')
     .trim()
 
+const splitSentences = (text: string) => {
+  const sentences: string[] = []
+  let current = ''
+  const endings = new Set(['。', '！', '？', '!', '?', '；', ';'])
+
+  for (const char of text) {
+    current += char
+    if (endings.has(char)) {
+      const sentence = current.trim()
+      if (sentence) {
+        sentences.push(sentence)
+      }
+      current = ''
+    }
+  }
+
+  const tail = current.trim()
+  if (tail) {
+    sentences.push(tail)
+  }
+
+  return sentences
+}
+
 const splitSpeechSegments = (text: string, maxChars = 120) => {
   const normalized = toSpeakableText(text)
   if (!normalized) {
     return []
   }
 
-  const sentences = normalized
-    .split(/(?<=[。！？!?；;])\s*/u)
-    .map((segment) => segment.trim())
-    .filter(Boolean)
+  const sentences = splitSentences(normalized)
   const source = sentences.length > 0 ? sentences : [normalized]
   const segments: string[] = []
   let current = ""
@@ -147,23 +253,25 @@ const splitSpeechSegments = (text: string, maxChars = 120) => {
     segments.push(current)
   }
 
-  return segments.flatMap((segment) => {
+  const chunks: string[] = []
+  for (const segment of segments) {
     if (segment.length <= maxChars * 1.5) {
-      return [segment]
+      chunks.push(segment)
+      continue
     }
 
-    const chunks: string[] = []
     for (let index = 0; index < segment.length; index += maxChars) {
       chunks.push(segment.slice(index, index + maxChars))
     }
-    return chunks
-  })
+  }
+
+  return chunks
 }
 
 const referenceSpeakableText = (reference: ReferenceItem) => {
   const title = summarizePath(reference.file_path)
   const snippets = (reference.content ?? [])
-    .flatMap((snippet) => normalizeSnippet(snippet))
+    .reduce<string[]>((items, snippet) => items.concat(normalizeSnippet(snippet)), [])
     .filter(Boolean)
 
   return toSpeakableText(
@@ -312,21 +420,23 @@ const buildReferenceLines = (references?: ReferenceItem[]) => {
     return []
   }
 
-  return references.flatMap((reference) => {
+  return references.reduce<string[]>((lines, reference) => {
     const paragraphs = (reference.content ?? [])
-      .flatMap((snippet) => snippetParagraphs(snippet))
+      .reduce<string[]>((items, snippet) => items.concat(snippetParagraphs(snippet)), [])
       .map((paragraph) => paragraph.trim())
       .filter(Boolean)
 
     if (paragraphs.length === 0) {
-      return [`[${reference.reference_id}] ${summarizePath(reference.file_path)}`]
+      lines.push(`[${reference.reference_id}] ${summarizePath(reference.file_path)}`)
+      return lines
     }
 
-    return [
+    lines.push(
       `[${reference.reference_id}] ${summarizePath(reference.file_path)}`,
       ...paragraphs.map((paragraph) => `  ${paragraph}`)
-    ]
-  })
+    )
+    return lines
+  }, [])
 }
 
 const referenceSortValue = (reference: ReferenceItem) => {
@@ -360,28 +470,16 @@ const buildAnswerExportText = (question: string, message: ChatMessage) => {
 
 const escapeHtml = (text: string) =>
   text
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
-
-const encodeSharePayload = (payload: unknown) => {
-  const json = JSON.stringify(payload)
-  const bytes = new TextEncoder().encode(json)
-  let binary = ''
-
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte)
-  })
-
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
-}
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 
 const decodeSharePayload = (encoded: string) => {
   const normalized = encoded
-    .replaceAll('-', '+')
-    .replaceAll('_', '/')
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
     .padEnd(Math.ceil(encoded.length / 4) * 4, '=')
   const binary = atob(normalized)
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
@@ -392,6 +490,50 @@ const decodeSharePayload = (encoded: string) => {
     references?: ReferenceItem[]
     createdAt: number
   }
+}
+
+const isShortShareToken = (token: string) =>
+  token.length > 0 && token.length <= 64 && /^[A-Za-z0-9_-]+$/.test(token)
+
+const getShareTokenFromLocation = () => {
+  const queryToken = new URLSearchParams(window.location.search).get('share')?.trim() ?? ''
+  if (queryToken) {
+    return queryToken
+  }
+
+  return window.location.hash.startsWith('#share=')
+    ? window.location.hash.slice('#share='.length).trim()
+    : ''
+}
+
+const normalizeSharedMessages = (payload: SharePayload, fallbackCreatedAt: number) => {
+  if (Array.isArray(payload.messages) && payload.messages.length > 0) {
+    return payload.messages
+      .filter((message) => message.content?.trim())
+      .map((message, index) => ({
+        id: message.id || `shared-message-${fallbackCreatedAt}-${index}`,
+        role: message.role,
+        content: message.content,
+        createdAt: message.createdAt || fallbackCreatedAt + index,
+        references: message.references ?? []
+      }))
+  }
+
+  return [
+    {
+      id: `shared-${fallbackCreatedAt}-question`,
+      role: 'user' as const,
+      content: payload.question ?? '',
+      createdAt: fallbackCreatedAt
+    },
+    {
+      id: `shared-${fallbackCreatedAt}-answer`,
+      role: 'assistant' as const,
+      content: payload.answer ?? '',
+      references: payload.references ?? [],
+      createdAt: fallbackCreatedAt + 1
+    }
+  ].filter((message) => message.content.trim())
 }
 
 const getCitationIds = (value: unknown) =>
@@ -456,7 +598,7 @@ const buildStructuredReferencesHtml = (references?: ReferenceItem[]) => {
   return orderedReferences
     .map((reference) => {
       const paragraphs = (reference.content ?? [])
-        .flatMap((snippet) => snippetParagraphs(snippet))
+        .reduce<string[]>((items, snippet) => items.concat(snippetParagraphs(snippet)), [])
         .map((paragraph) => paragraph.trim())
         .filter(Boolean)
       const title = summarizePath(reference.file_path)
@@ -1056,6 +1198,15 @@ export default function App() {
   const [playingAudioTarget, setPlayingAudioTarget] = useState<string | null>(null)
   const [pendingPlaybackTarget, setPendingPlaybackTarget] = useState<string | null>(null)
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false)
+  const [voiceSearch, setVoiceSearch] = useState('')
+  const [voiceFilter, setVoiceFilter] = useState<VoiceFilterKey>('recommended')
+  const [speechProvider, setSpeechProvider] = useState<SpeechProviderConfig | null>(null)
+  const [voiceOptions, setVoiceOptions] = useState<SpeechVoiceOption[]>([])
+  const [speechSettingsLoading, setSpeechSettingsLoading] = useState(false)
+  const [speechSettingsError, setSpeechSettingsError] = useState('')
+  const [previewLoadingSpeaker, setPreviewLoadingSpeaker] = useState<string | null>(null)
   const [starterPromptDeck, setStarterPromptDeck] = useState(() => pickStarterPromptDeck())
   const [touchReference, setTouchReference] = useState<{
     messageId: string
@@ -1085,6 +1236,51 @@ export default function App() {
   useEffect(() => {
     saveConfig(config)
   }, [config])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadSpeechSettings = async () => {
+      setSpeechSettingsLoading(true)
+      setSpeechSettingsError('')
+
+      try {
+        const auth = {
+          apiKey: config.apiKey,
+          bearerToken: config.bearerToken
+        }
+        const [statusResponse, voicesResponse] = await Promise.all([
+          fetchSpeechStatus(config.baseUrl, auth),
+          fetchSpeechVoices(config.baseUrl, auth)
+        ])
+
+        if (cancelled) {
+          return
+        }
+
+        setSpeechProvider(statusResponse.provider)
+        setVoiceOptions(Array.isArray(voicesResponse.voices) ? voicesResponse.voices : [])
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+
+        setSpeechSettingsError(
+          error instanceof Error ? error.message : '朗读设置加载失败。'
+        )
+      } finally {
+        if (!cancelled) {
+          setSpeechSettingsLoading(false)
+        }
+      }
+    }
+
+    void loadSpeechSettings()
+
+    return () => {
+      cancelled = true
+    }
+  }, [config.apiKey, config.baseUrl, config.bearerToken])
 
   useEffect(() => {
     saveSessions(sessions)
@@ -1117,6 +1313,128 @@ export default function App() {
   const touchMessageReference = touchMessage?.references?.find(
     (reference) => reference.reference_id === touchReference?.referenceId
   ) ?? null
+  const speechSettings = config.speechSettings ?? {}
+  const defaultSpeakerId = speechProvider?.tts_speaker_id ?? ''
+  const selectedSpeakerId = speechSettings.speakerId ?? ''
+  const effectiveSpeakerId = selectedSpeakerId || defaultSpeakerId
+  const defaultVoice = voiceOptions.find((voice) => voice.speaker_id === defaultSpeakerId)
+  const effectiveVoice = voiceOptions.find((voice) => voice.speaker_id === effectiveSpeakerId)
+  const speechSpeedRatio = speechSettings.speedRatio ?? speechProvider?.tts_speed_ratio ?? 1
+  const speechVolumeRatio = speechSettings.volumeRatio ?? speechProvider?.tts_volume_ratio ?? 1
+  const speechPitchRatio = speechSettings.pitchRatio ?? speechProvider?.tts_pitch_ratio ?? 1
+  const recommendedVoiceOptions = useMemo(() => {
+    const recommended = voiceOptions.filter((voice) => voice.recommended)
+    return (recommended.length > 0 ? recommended : voiceOptions).slice(0, 6)
+  }, [voiceOptions])
+  const filteredVoiceOptions = useMemo(() => {
+    const keyword = voiceSearch.trim().toLocaleLowerCase('zh-CN')
+
+    return voiceOptions.filter((voice) => {
+      const matchesFilter =
+        voiceFilter === 'all' ||
+        (voiceFilter === 'recommended' && voice.recommended) ||
+        (voiceFilter === 'female' && voice.gender === 'female') ||
+        (voiceFilter === 'male' && voice.gender === 'male') ||
+        (voiceFilter === 'reading' && voice.category === '有声阅读') ||
+        (voiceFilter === 'roleplay' && voice.category === '角色扮演') ||
+        (voiceFilter === 'multilingual' && voice.category === '多语种')
+
+      if (!matchesFilter) {
+        return false
+      }
+
+      if (!keyword) {
+        return true
+      }
+
+      return [
+        voice.name,
+        voice.category,
+        voice.language,
+        voice.speaker_id,
+        getVoiceGenderLabel(voice),
+        getVoiceTagline(voice)
+      ]
+        .join(' ')
+        .toLocaleLowerCase('zh-CN')
+        .includes(keyword)
+    })
+  }, [voiceFilter, voiceOptions, voiceSearch])
+
+  const selectedVoiceSource = selectedSpeakerId ? '已使用自选音色' : '使用系统默认'
+  const currentPreviewSpeakerId = effectiveSpeakerId || undefined
+  const closeSettings = () => {
+    setSettingsOpen(false)
+    setVoicePickerOpen(false)
+  }
+  const selectVoice = (speakerId?: string, closePicker = false) => {
+    updateSpeechSettings({ speakerId })
+    if (closePicker) {
+      setVoicePickerOpen(false)
+    }
+  }
+
+  const isVoicePreviewBusy = (speakerId?: string) => {
+    const key = speakerId ?? 'default'
+    return previewLoadingSpeaker === key
+  }
+
+  const getVoicePreviewLabel = (speakerId?: string) => {
+    const target = `voice-preview:${speakerId ?? 'default'}`
+
+    if (previewLoadingSpeaker === (speakerId ?? 'default')) {
+      return '生成中'
+    }
+    if (playingAudioTarget === target) {
+      return '停止'
+    }
+    if (pendingPlaybackTarget === target) {
+      return '播放'
+    }
+    return '试听'
+  }
+
+  const updateSpeechSettings = (patch: Partial<SpeechSettings>) => {
+    setConfig((current) => ({
+      ...current,
+      speechSettings: {
+        ...(current.speechSettings ?? {}),
+        ...patch
+      }
+    }))
+  }
+
+  const resetSpeechSettings = () => {
+    setConfig((current) => ({
+      ...current,
+      speechSettings: {}
+    }))
+  }
+
+  const handleSpeechRatioChange =
+    (key: keyof Pick<SpeechSettings, 'speedRatio' | 'volumeRatio' | 'pitchRatio'>) =>
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      updateSpeechSettings({ [key]: Number(event.target.value) } as Partial<SpeechSettings>)
+    }
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      return
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (voicePickerOpen) {
+          setVoicePickerOpen(false)
+          return
+        }
+        closeSettings()
+      }
+    }
+
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [settingsOpen, voicePickerOpen])
 
   const resizeTextarea = (value: string) => {
     if (!textareaRef.current) {
@@ -1140,36 +1458,29 @@ export default function App() {
   }, [currentSessionId])
 
   useEffect(() => {
-    const hash = window.location.hash.startsWith('#share=')
-      ? window.location.hash.slice('#share='.length)
-      : ''
+    const shareToken = getShareTokenFromLocation()
 
-    if (!hash) {
+    if (!shareToken) {
       return
     }
 
-    try {
-      const payload = decodeSharePayload(hash)
-      const sharedSessionId = `shared-${payload.createdAt}`
+    let cancelled = false
+
+    const openSharedSession = (payload: SharePayload, shareId?: string) => {
+      const createdAt = payload.createdAt || Date.now()
+      const messages = normalizeSharedMessages(payload, createdAt)
+      if (messages.length === 0) {
+        throw new Error('empty share')
+      }
+
+      const sharedSessionId = `shared-${shareId ?? createdAt}`
       const sharedSession: ChatSession = {
         id: sharedSessionId,
-        title: summarizeQuestion(payload.question || '分享问答'),
-        updatedAt: payload.createdAt,
-        messages: [
-          {
-            id: `${sharedSessionId}-question`,
-            role: 'user',
-            content: payload.question,
-            createdAt: payload.createdAt
-          },
-          {
-            id: `${sharedSessionId}-answer`,
-            role: 'assistant',
-            content: payload.answer,
-            references: payload.references ?? [],
-            createdAt: payload.createdAt + 1
-          }
-        ]
+        title:
+          payload.title ??
+          summarizeQuestion(messages.find((message) => message.role === 'user')?.content ?? '分享问答'),
+        updatedAt: createdAt,
+        messages
       }
 
       setSessions((current) => {
@@ -1177,11 +1488,40 @@ export default function App() {
         return [sharedSession, ...filtered]
       })
       setCurrentSessionId(sharedSessionId)
-      setUiStatus({ tone: 'success', text: '已打开分享问答。' })
-    } catch {
-      setUiStatus({ tone: 'error', text: '分享内容无法解析。' })
+      setUiStatus({ tone: 'success', text: '已打开分享会话。' })
     }
-  }, [])
+
+    const loadSharedSession = async () => {
+      try {
+        if (isShortShareToken(shareToken)) {
+          try {
+            const response = await fetchShare(config.baseUrl, shareToken)
+            if (!cancelled) {
+              openSharedSession(response.payload, response.share_id)
+            }
+            return
+          } catch {
+            // Fall back to the legacy in-url payload format below.
+          }
+        }
+
+        const legacyPayload = decodeSharePayload(shareToken)
+        if (!cancelled) {
+          openSharedSession(legacyPayload)
+        }
+      } catch {
+        if (!cancelled) {
+          setUiStatus({ tone: 'error', text: '分享内容无法打开。' })
+        }
+      }
+    }
+
+    void loadSharedSession()
+
+    return () => {
+      cancelled = true
+    }
+  }, [config.baseUrl])
 
   useEffect(() => {
     return () => {
@@ -1198,15 +1538,7 @@ export default function App() {
       void recorderStopRef.current?.()
       recorderStopRef.current = null
 
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current = null
-      }
-
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current)
-        audioUrlRef.current = null
-      }
+      releaseCurrentAudio()
 
       if (uiStatusTimerRef.current !== null) {
         window.clearTimeout(uiStatusTimerRef.current)
@@ -1247,14 +1579,7 @@ export default function App() {
     asrSocketRef.current = null
     void recorderStopRef.current?.()
     recorderStopRef.current = null
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current = null
-    }
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current)
-      audioUrlRef.current = null
-    }
+    releaseCurrentAudio()
     audioTargetRef.current = null
     setPlayingAudioTarget(null)
     setPendingPlaybackTarget(null)
@@ -1297,15 +1622,7 @@ export default function App() {
   const clearSpeechAudio = () => {
     speechRunIdRef.current += 1
 
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current = null
-    }
-
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current)
-      audioUrlRef.current = null
-    }
+    releaseCurrentAudio()
 
     audioTargetRef.current = null
     setPlayingAudioTarget(null)
@@ -1315,7 +1632,11 @@ export default function App() {
 
   const releaseCurrentAudio = () => {
     if (audioRef.current) {
-      audioRef.current.pause()
+      const audio = audioRef.current
+      audio.pause()
+      audio.removeAttribute('src')
+      audio.load()
+      audio.remove()
       audioRef.current = null
     }
 
@@ -1343,7 +1664,14 @@ export default function App() {
   const createSpeechAudio = (target: string, blob: Blob, onEnded?: () => void) => {
     releaseCurrentAudio()
     const audioUrl = URL.createObjectURL(blob)
-    const audio = new Audio(audioUrl)
+    const audio = document.createElement('audio')
+    audio.src = audioUrl
+    audio.preload = 'auto'
+    audio.volume = 1
+    audio.muted = false
+    audio.setAttribute('playsinline', 'true')
+    audio.style.display = 'none'
+    document.body.appendChild(audio)
     audioRef.current = audio
     audioUrlRef.current = audioUrl
     audioTargetRef.current = target
@@ -1373,10 +1701,61 @@ export default function App() {
   }
 
   const fetchSpeechSegment = (segment: string) =>
-    synthesizeSpeech(config.baseUrl, segment, {
-      apiKey: config.apiKey,
-      bearerToken: config.bearerToken
-    })
+    synthesizeSpeech(
+      config.baseUrl,
+      segment,
+      {
+        apiKey: config.apiKey,
+        bearerToken: config.bearerToken
+      },
+      config.speechSettings
+    )
+
+  const playVoicePreview = async (speakerId?: string) => {
+    const target = `voice-preview:${speakerId ?? 'default'}`
+
+    if (playingAudioTarget === target) {
+      pauseSpeaking()
+      return
+    }
+
+    if (pendingPlaybackTarget === target && audioRef.current && audioTargetRef.current === target) {
+      await tryPlaySpeechAudio(target, '试听已准备好，请再点一次播放。')
+      return
+    }
+
+    clearSpeechAudio()
+    setSpeechError('')
+    setPreviewLoadingSpeaker(speakerId ?? 'default')
+
+    try {
+      const blob = await synthesizeSpeech(
+        config.baseUrl,
+        TTS_PREVIEW_TEXT,
+        {
+          apiKey: config.apiKey,
+          bearerToken: config.bearerToken
+        },
+        {
+          ...(config.speechSettings ?? {}),
+          speakerId
+        }
+      )
+
+      createSpeechAudio(target, blob, () => {
+        clearSpeechAudio()
+        setPreviewLoadingSpeaker(null)
+      })
+      await tryPlaySpeechAudio(target, '试听已生成，请再点一次播放。')
+    } catch (error) {
+      setSpeechError(error instanceof Error ? error.message : '音色试听失败。')
+      clearSpeechAudio()
+    } finally {
+      setPreviewLoadingSpeaker((current) =>
+        current === (speakerId ?? 'default') ? null : current
+      )
+    }
+  }
 
   const playSpeechSegments = async (target: string, segments: string[]) => {
     const runId = speechRunIdRef.current
@@ -1881,22 +2260,63 @@ export default function App() {
     showUiStatus('浏览器复制受限，已下载文本文件。', 'success')
   }
 
+  const buildSharePayload = (fallbackMessage: ChatMessage, relatedQuestion: string): SharePayload => {
+    const shareMessages = (currentSession?.messages ?? [])
+      .filter((message) => !message.isStreaming && !message.error && message.content.trim())
+      .map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        createdAt: message.createdAt,
+        references: message.references ?? []
+      }))
+
+    if (shareMessages.length > 0) {
+      return {
+        title: currentSession?.title ?? summarizeQuestion(relatedQuestion || '分享会话'),
+        messages: shareMessages,
+        createdAt: Date.now()
+      }
+    }
+
+    return {
+      title: summarizeQuestion(relatedQuestion || '分享问答'),
+      messages: [
+        {
+          id: `share-question-${fallbackMessage.createdAt}`,
+          role: 'user',
+          content: relatedQuestion,
+          createdAt: fallbackMessage.createdAt
+        },
+        {
+          id: `share-answer-${fallbackMessage.createdAt}`,
+          role: 'assistant',
+          content: fallbackMessage.content,
+          references: fallbackMessage.references ?? [],
+          createdAt: fallbackMessage.createdAt + 1
+        }
+      ].filter((message) => message.content.trim()),
+      createdAt: Date.now()
+    }
+  }
+
   const handleShareAnswer = async (message: ChatMessage, relatedQuestion: string) => {
-    const sections = splitAnswerSections(stripKnownFileExtensions(message.content))
-    const payload = encodeSharePayload({
-      question: relatedQuestion,
-      answer: sections.body || message.content,
-      references: message.references ?? [],
-      createdAt: message.createdAt
-    })
-    const shareUrl = new URL(window.location.href)
-    shareUrl.hash = `share=${payload}`
-    const shareText = buildAnswerExportText(relatedQuestion, message)
+    let shareUrl: URL | null = null
 
     try {
+      const payload = buildSharePayload(message, relatedQuestion)
+      const response = await createShare(config.baseUrl, payload, {
+        apiKey: config.apiKey,
+        bearerToken: config.bearerToken
+      })
+      shareUrl = new URL(window.location.href)
+      shareUrl.searchParams.set('share', response.share_id)
+      shareUrl.hash = ''
+      const shareText = buildAnswerExportText(relatedQuestion, message)
+
       if (navigator.share && window.isSecureContext) {
         await navigator.share({
-          title: summarizeQuestion(relatedQuestion || '玄德问答'),
+          title: payload.title ?? summarizeQuestion(relatedQuestion || '玄德问答'),
           text: shareText,
           url: shareUrl.toString()
         })
@@ -1915,8 +2335,13 @@ export default function App() {
       }
     }
 
-    openManualCopyPrompt('请复制以下分享链接', shareUrl.toString())
-    showUiStatus('已生成分享链接，请手动复制。')
+    if (shareUrl) {
+      openManualCopyPrompt('请复制以下分享链接', shareUrl.toString())
+      showUiStatus('已生成分享链接，请手动复制。')
+      return
+    }
+
+    showUiStatus('分享链接生成失败，请稍后再试。', 'error')
   }
 
   const handleDownloadPdf = async (message: ChatMessage, relatedQuestion: string) => {
@@ -2113,6 +2538,30 @@ export default function App() {
           <div className="topbar-title">
             <h2>经卷问答册</h2>
           </div>
+          <div className="topbar-actions">
+            <button
+              type="button"
+              className="icon-action"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="打开设置"
+              title="设置"
+            >
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
+                <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.37a1.7 1.7 0 0 0-1 .92V20a2 2 0 0 1-4 0v-.09a1.7 1.7 0 0 0-1-.92 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.92-1H3.6a2 2 0 0 1 0-4h.09a1.7 1.7 0 0 0 .92-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-.92V3.6a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 1 .92 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.38.17.7.5.92 1h.08a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-.91 1Z" />
+              </svg>
+            </button>
+          </div>
         </header>
 
         <section className="chat-thread">
@@ -2240,6 +2689,329 @@ export default function App() {
           </div>
         </form>
       </main>
+
+      {settingsOpen && (
+        <div className="settings-overlay" onClick={closeSettings}>
+          <section
+            className="settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="settings-modal-header">
+              <div>
+                <p className="section-label">设置</p>
+                <h3 id="settings-title">朗读语音</h3>
+              </div>
+              <button
+                type="button"
+                className="icon-action"
+                onClick={closeSettings}
+                aria-label="关闭设置"
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="settings-modal-body">
+              <div className="voice-current-panel">
+                <div>
+                  <span>当前音色</span>
+                  <strong>{effectiveVoice?.name ?? (effectiveSpeakerId || '未配置')}</strong>
+                  <p>{selectedVoiceSource}</p>
+                </div>
+                <button
+                  type="button"
+                  className="voice-preview-button"
+                  onClick={() => void playVoicePreview(currentPreviewSpeakerId)}
+                  disabled={!currentPreviewSpeakerId || isVoicePreviewBusy(currentPreviewSpeakerId)}
+                >
+                  {getVoicePreviewLabel(currentPreviewSpeakerId)}
+                </button>
+              </div>
+
+              <section className="voice-recommend-section">
+                <div className="voice-section-row">
+                  <div>
+                    <span>推荐音色</span>
+                    <p>优先保留适合问答和经典解读的几个选择。</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => {
+                      setVoiceFilter('recommended')
+                      setVoicePickerOpen(true)
+                    }}
+                  >
+                    查看全部音色
+                  </button>
+                </div>
+                <div className="voice-card-grid">
+                  {recommendedVoiceOptions.map((voice) => {
+                    const isSelected = effectiveSpeakerId === voice.speaker_id
+                    const previewLabel = getVoicePreviewLabel(voice.speaker_id)
+
+                    return (
+                      <div
+                        key={voice.speaker_id}
+                        className={`voice-card ${isSelected ? 'selected' : ''}`}
+                      >
+                        <button
+                          type="button"
+                          className="voice-card-main"
+                          onClick={() => selectVoice(voice.speaker_id)}
+                          aria-pressed={isSelected}
+                        >
+                          <span>{voice.name}</span>
+                          <strong>{getVoiceTagline(voice)}</strong>
+                          <small>{getVoiceMeta(voice)}</small>
+                        </button>
+                        <button
+                          type="button"
+                          className="voice-preview-button"
+                          onClick={() => void playVoicePreview(voice.speaker_id)}
+                          disabled={isVoicePreviewBusy(voice.speaker_id)}
+                        >
+                          {previewLabel}
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </section>
+
+              <div className="settings-current">
+                试听文案：{TTS_PREVIEW_TEXT}
+              </div>
+
+              <div className="ratio-field">
+                <div className="ratio-label-row">
+                  <span>语速</span>
+                  <strong>
+                    {describeSpeedRatio(speechSpeedRatio)} · {formatRatio(speechSpeedRatio)}x
+                  </strong>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2"
+                  step="0.1"
+                  value={speechSpeedRatio}
+                  onChange={handleSpeechRatioChange('speedRatio')}
+                />
+                <div className="ratio-scale">
+                  <span>慢</span>
+                  <span>
+                    默认 {formatRatio(speechProvider?.tts_speed_ratio ?? 1)}x
+                  </span>
+                  <span>快</span>
+                </div>
+              </div>
+
+              <div className="ratio-field">
+                <div className="ratio-label-row">
+                  <span>音量</span>
+                  <strong>
+                    {describeVolumeRatio(speechVolumeRatio)} · {formatRatio(speechVolumeRatio)}x
+                  </strong>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2"
+                  step="0.1"
+                  value={speechVolumeRatio}
+                  onChange={handleSpeechRatioChange('volumeRatio')}
+                />
+                <div className="ratio-scale">
+                  <span>轻</span>
+                  <span>
+                    默认 {formatRatio(speechProvider?.tts_volume_ratio ?? 1)}x
+                  </span>
+                  <span>响</span>
+                </div>
+              </div>
+
+              <div className="ratio-field">
+                <div className="ratio-label-row">
+                  <span>音调</span>
+                  <strong>
+                    {describePitchRatio(speechPitchRatio)} · {formatRatio(speechPitchRatio)}x
+                  </strong>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2"
+                  step="0.1"
+                  value={speechPitchRatio}
+                  onChange={handleSpeechRatioChange('pitchRatio')}
+                />
+                <div className="ratio-scale">
+                  <span>低</span>
+                  <span>
+                    默认 {formatRatio(speechProvider?.tts_pitch_ratio ?? 1)}x
+                  </span>
+                  <span>高</span>
+                </div>
+              </div>
+
+              {speechSettingsLoading && (
+                <p className="settings-status">正在读取默认语音设置...</p>
+              )}
+              {speechSettingsError && (
+                <p className="settings-status error">语音设置加载失败：{speechSettingsError}</p>
+              )}
+            </div>
+
+            <div className="settings-modal-actions">
+              <button type="button" className="secondary-action" onClick={resetSpeechSettings}>
+                恢复默认设置
+              </button>
+              <button
+                type="button"
+                className="primary-action"
+                onClick={closeSettings}
+              >
+                完成
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {voicePickerOpen && (
+        <div className="settings-overlay voice-picker-layer" onClick={() => setVoicePickerOpen(false)}>
+          <section
+            className="settings-modal voice-picker-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="voice-picker-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="settings-modal-header">
+              <div>
+                <p className="section-label">全部音色</p>
+                <h3 id="voice-picker-title">选择朗读音色</h3>
+              </div>
+              <button
+                type="button"
+                className="icon-action"
+                onClick={() => setVoicePickerOpen(false)}
+                aria-label="关闭音色选择"
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="settings-modal-body voice-picker-body">
+              <input
+                className="voice-search-input"
+                value={voiceSearch}
+                onChange={(event) => setVoiceSearch(event.target.value)}
+                placeholder="搜索音色名称或分类"
+              />
+
+              <div className="voice-filter-row" role="tablist" aria-label="音色筛选">
+                {VOICE_FILTERS.map((filter) => (
+                  <button
+                    key={filter.key}
+                    type="button"
+                    className={`voice-filter-chip ${voiceFilter === filter.key ? 'active' : ''}`}
+                    onClick={() => setVoiceFilter(filter.key)}
+                  >
+                    {filter.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="voice-list">
+                <div
+                  className={`voice-list-item ${!selectedSpeakerId ? 'selected' : ''}`}
+                >
+                  <button
+                    type="button"
+                    className="voice-list-main"
+                    onClick={() => selectVoice(undefined, true)}
+                  >
+                    <span>使用系统默认</span>
+                    <strong>{defaultVoice?.name ?? (defaultSpeakerId || '未配置')}</strong>
+                    <small>使用当前默认音色设置</small>
+                  </button>
+                  <button
+                    type="button"
+                    className="voice-preview-button"
+                    onClick={() => void playVoicePreview(defaultSpeakerId || undefined)}
+                    disabled={!defaultSpeakerId || isVoicePreviewBusy(defaultSpeakerId)}
+                  >
+                    {getVoicePreviewLabel(defaultSpeakerId || undefined)}
+                  </button>
+                </div>
+
+                {filteredVoiceOptions.length === 0 ? (
+                  <div className="voice-list-empty">没有匹配的音色。</div>
+                ) : (
+                  filteredVoiceOptions.map((voice) => {
+                    const isSelected = effectiveSpeakerId === voice.speaker_id
+                    const previewLabel = getVoicePreviewLabel(voice.speaker_id)
+
+                    return (
+                      <div
+                        key={voice.speaker_id}
+                        className={`voice-list-item ${isSelected ? 'selected' : ''}`}
+                      >
+                        <button
+                          type="button"
+                          className="voice-list-main"
+                          onClick={() => selectVoice(voice.speaker_id, true)}
+                        >
+                          <span>{voice.name}</span>
+                          <strong>{getVoiceTagline(voice)}</strong>
+                          <small>{getVoiceMeta(voice)}</small>
+                        </button>
+                        <button
+                          type="button"
+                          className="voice-preview-button"
+                          onClick={() => void playVoicePreview(voice.speaker_id)}
+                          disabled={isVoicePreviewBusy(voice.speaker_id)}
+                        >
+                          {previewLabel}
+                        </button>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
 
       {hoverPreview && hoverReference && (
         <div

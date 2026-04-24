@@ -18,6 +18,10 @@ from lightrag.api.volc_speech import (
     stream_tts_audio,
     synthesize_tts_audio,
 )
+from lightrag.api.volc_tts_voices import (
+    VOLCENGINE_TTS_VOICE_SOURCE,
+    VOLCENGINE_TTS_VOICES,
+)
 
 router = APIRouter(prefix="/speech", tags=["speech"])
 
@@ -46,9 +50,20 @@ class SpeechStatusResponse(BaseModel):
     provider: SpeechProviderConfig
 
 
+class SpeechVoice(BaseModel):
+    category: str
+    name: str
+    speaker_id: str
+    language: str
+    gender: Literal["female", "male", "unknown"] = "unknown"
+    recommended: bool = False
+
+
 class SpeechVoicesResponse(BaseModel):
-    status: Literal["not_implemented"] = "not_implemented"
-    message: str
+    status: Literal["ok"] = "ok"
+    voices: list[SpeechVoice]
+    default_speaker_id: Optional[str] = None
+    source: str
 
 
 class TTSRequest(BaseModel):
@@ -150,14 +165,13 @@ def create_speech_routes(api_key: Optional[str] = None):
         dependencies=[Depends(combined_auth)],
     )
     async def list_speech_voices():
-        ensure_volc_speech_config(
+        config = ensure_volc_speech_config(
             require_asr=False, require_tts=True, require_tts_speaker=False
         )
         return SpeechVoicesResponse(
-            message=(
-                "Volcengine voice discovery is not implemented yet. "
-                "Configure VOLC_TTS_SPEAKER_ID on the backend for now."
-            )
+            voices=[SpeechVoice(**voice) for voice in VOLCENGINE_TTS_VOICES],
+            default_speaker_id=config.tts_speaker_id or None,
+            source=VOLCENGINE_TTS_VOICE_SOURCE,
         )
 
     @router.post(
