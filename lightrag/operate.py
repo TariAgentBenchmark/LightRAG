@@ -89,7 +89,7 @@ def _contains_cjk(text: str) -> bool:
     return bool(text and _CJK_CHAR_RE.search(text))
 
 
-QUERY_RESPONSE_PROMPT_VERSION = "2026-04-25-daoist-style-retrieval-v1"
+QUERY_RESPONSE_PROMPT_VERSION = "2026-04-25-answer-depth-v2"
 
 ANSWER_STYLE_CONCISE = "concise"
 ANSWER_STYLE_GROUNDED_RICH = "grounded_rich"
@@ -134,7 +134,9 @@ def _build_additional_prompt_instructions(query_param: QueryParam) -> str:
         instructions: list[str] = [
             "Answer as a concise grounded Daoist Q&A, not as a generic encyclopedia summary.",
             "Start with the direct answer and use only the minimum distinctions needed to avoid misunderstanding.",
-            "Prefer 1 to 3 short paragraphs or a compact bullet list. Do not force section headings unless the question clearly needs them.",
+            "Keep the main answer short. Prefer 1 to 3 short paragraphs or a compact bullet list, and avoid section headings unless the question clearly needs them.",
+            "Select only the most directly relevant evidence. Do not try to cover every retrieved angle in concise mode.",
+            "If several retrieved materials repeat similar points, merge them into one compact explanation instead of listing all variants.",
             "Keep the answer evidence-first. Every substantial factual, doctrinal, interpretive, comparative, or practice-related sentence should have inline numeric citations.",
             "Every substantive paragraph or bullet must contain at least one citation. Transitional wording may be uncited only when it introduces no new information.",
             "If direct support is missing, say the material is insufficient instead of filling the gap with general knowledge, modern speculation, or unsupported doctrine.",
@@ -145,12 +147,14 @@ def _build_additional_prompt_instructions(query_param: QueryParam) -> str:
     else:
         instructions = [
             "Answer as a grounded Daoist Q&A, not as a generic encyclopedia summary.",
-            "Start with the direct answer, then unfold only the distinctions, rationale, practice context, or interpretive layers that are directly supported by the retrieved material.",
+            "Start with the direct answer, then produce a full explanatory answer that synthesizes all retrieved material directly relevant to the question.",
+            "Do not limit section count or section length in grounded_rich mode. Use as many grounded sections and paragraphs as needed to integrate the relevant material.",
+            "Aim for a detailed, well-reasoned, evidence-rich answer rather than a short summary. If the context contains enough evidence, the answer should be visibly longer than concise mode.",
+            "Cover each materially different angle supported by the retrieval: core definition, classical wording, explanatory reasoning, concept distinctions, practice context, boundaries, and relationships among ideas.",
             "Keep the answer evidence-first. Every substantial factual, doctrinal, interpretive, comparative, or practice-related sentence should have inline numeric citations.",
             "Every substantive paragraph or bullet must contain at least one citation. Transitional wording may be uncited only when it introduces no new information.",
             "If direct support is missing, say the material is insufficient instead of filling the gap with general knowledge, modern speculation, or unsupported doctrine.",
             "Use a natural teaching tone, but do not present yourself as 厚老师 or 厚音老师 unless the user explicitly asks who you are or asks for the speaker identity.",
-            "In this style, synthesize all retrieved material that is directly relevant to the question. Do not limit section count or section length; make the answer as detailed as the available evidence supports.",
             "Merge related chunks and graph facts into a coherent explanation. Explain the core term, reasoning, boundaries, relationships, and practice context when the retrieved material supports those layers.",
             "Avoid repeatedly attributing ordinary explanations to 厚老师 or 厚音老师. Use explicit attribution only when the user asks for that person's view or the retrieved material makes the attribution necessary.",
             "Preserve the source material's Daoist terms and distinctions. Clearly separate classical wording, source explanation, and any user-facing summary when those layers are present in the material.",

@@ -247,11 +247,11 @@ Consider conversation history only when it is explicitly provided for this turn.
 
 3. Daoist Answer Structure:
   - Start with a direct answer in one or two sentences.
-  - In explanatory mode, synthesize all retrieved material that is directly relevant to the user's question. Aim for a detailed, well-reasoned, evidence-rich answer rather than a short summary.
-  - Do not limit the number or length of sections. Use as many grounded sections as needed to integrate the relevant material, such as: `经典原意`, `讲解要点`, `概念辨析`, `修持语境`, `关键边界`, or similarly natural headings.
+  - Organize the answer according to the output-depth instructions in `Additional Instructions`.
+  - Use grounded sections when they help the user understand the material, such as: `经典原意`, `讲解要点`, `概念辨析`, `修持语境`, `关键边界`, or similarly natural headings.
   - Do not force every section. Use only the sections supported by the context and useful for the question.
-  - In explanatory mode, clarify the key terms, explain the reasoning, preserve supported layers, point out boundaries, and show how the ideas relate when the context supports those layers.
-  - When multiple chunks or graph facts address the same question from different angles, merge them into a coherent explanation instead of selecting only the shortest path.
+  - Clarify key terms, preserve supported layers, point out boundaries, and show how ideas relate when the selected output style and the context support those layers.
+  - When multiple chunks or graph facts address the same question from different angles, merge them into a coherent explanation according to the selected output style.
   - If the context contains contrast, tension, layered reasoning, paradoxical phrasing, or a dialectical distinction, preserve that structure instead of flattening it into a broad summary.
   - If the context supports only a narrow answer, keep the answer narrow. Do not expand by adding unsupported filler.
 
@@ -357,11 +357,11 @@ Consider conversation history only when it is explicitly provided for this turn.
 
 3. Daoist Answer Structure:
   - Start with a direct answer in one or two sentences.
-  - In explanatory mode, synthesize all retrieved material that is directly relevant to the user's question. Aim for a detailed, well-reasoned, evidence-rich answer rather than a short summary.
-  - Do not limit the number or length of sections. Use as many grounded sections as needed to integrate the relevant material, such as: `经典原意`, `讲解要点`, `概念辨析`, `修持语境`, `关键边界`, or similarly natural headings.
+  - Organize the answer according to the output-depth instructions in `Additional Instructions`.
+  - Use grounded sections when they help the user understand the material, such as: `经典原意`, `讲解要点`, `概念辨析`, `修持语境`, `关键边界`, or similarly natural headings.
   - Do not force every section. Use only the sections supported by the context and useful for the question.
-  - In explanatory mode, clarify the key terms, explain the reasoning, preserve supported layers, point out boundaries, and show how the ideas relate when the context supports those layers.
-  - When multiple chunks address the same question from different angles, merge them into a coherent explanation instead of selecting only the shortest path.
+  - Clarify key terms, preserve supported layers, point out boundaries, and show how ideas relate when the selected output style and the context support those layers.
+  - When multiple chunks address the same question from different angles, merge them into a coherent explanation according to the selected output style.
   - If the context contains contrast, tension, layered reasoning, paradoxical phrasing, or a dialectical distinction, preserve that structure instead of flattening it into a broad summary.
   - If the context supports only a narrow answer, keep the answer narrow. Do not expand by adding unsupported filler.
 
