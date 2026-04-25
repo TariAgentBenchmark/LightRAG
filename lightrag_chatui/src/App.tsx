@@ -92,6 +92,7 @@ const STARTER_PROMPT_DECKS = [
 
 const STARTER_PROMPT_COUNT = 6
 const TTS_PREVIEW_TEXT = '道在日用之间，贵在清静自然。'
+const SPEECH_SEGMENT_MAX_CHARS = 180
 
 const VOICE_FILTERS = [
   { key: 'recommended', label: '推荐' },
@@ -234,7 +235,30 @@ const splitSentences = (text: string) => {
   return sentences
 }
 
-const splitSpeechSegments = (text: string, maxChars = 120) => {
+const isConstrainedMobileAudioBrowser = () => {
+  if (typeof navigator === 'undefined') {
+    return false
+  }
+
+  const userAgent = navigator.userAgent
+  const isIOS =
+    /iP(?:hone|ad|od)/i.test(userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  const isMobileSafari =
+    /Safari/i.test(userAgent) &&
+    /Mobile/i.test(userAgent) &&
+    !/(CriOS|FxiOS|EdgiOS|OPiOS)/i.test(userAgent)
+  const isWeChat = /MicroMessenger/i.test(userAgent)
+
+  return isIOS || isMobileSafari || isWeChat
+}
+
+const mergeSpeechBlobs = (blobs: Blob[]) => {
+  const mediaType = blobs.find((blob) => blob.type)?.type || 'audio/mpeg'
+  return new Blob(blobs, { type: mediaType })
+}
+
+const splitSpeechSegments = (text: string, maxChars = SPEECH_SEGMENT_MAX_CHARS) => {
   const normalized = toSpeakableText(text)
   if (!normalized) {
     return []
@@ -1897,6 +1921,14 @@ export default function App() {
       config.speechSettings
     )
 
+  const shouldJoinSpeechSegmentsForPlayback = () => {
+    const configuredFormat = speechProvider?.tts_audio_format?.toLocaleLowerCase()
+    const canConcatenateAudio =
+      !configuredFormat || configuredFormat === 'mp3' || configuredFormat === 'mpeg'
+
+    return canConcatenateAudio && isConstrainedMobileAudioBrowser()
+  }
+
   const playVoicePreview = async (speakerId?: string) => {
     const target = `voice-preview:${speakerId ?? 'default'}`
 
@@ -1985,6 +2017,34 @@ export default function App() {
     }
   }
 
+  const playSpeechSegmentsAsSingleAudio = async (target: string, segments: string[]) => {
+    const runId = speechRunIdRef.current
+    const blobs: Blob[] = []
+
+    for (const segment of segments) {
+      if (speechRunIdRef.current !== runId) {
+        return
+      }
+
+      const blob = await fetchSpeechSegment(segment)
+
+      if (speechRunIdRef.current !== runId) {
+        return
+      }
+
+      blobs.push(blob)
+    }
+
+    if (blobs.length === 0 || speechRunIdRef.current !== runId) {
+      return
+    }
+
+    createSpeechAudio(target, mergeSpeechBlobs(blobs), () => {
+      clearSpeechAudio()
+    })
+    await tryPlaySpeechAudio(target, '语音已准备好，请再点一次播放。')
+  }
+
   const playSpeechText = async (
     target: string,
     text: string,
@@ -2011,7 +2071,11 @@ export default function App() {
       }
 
       speechRunIdRef.current += 1
-      await playSpeechSegments(target, speechSegments)
+      if (shouldJoinSpeechSegmentsForPlayback()) {
+        await playSpeechSegmentsAsSingleAudio(target, speechSegments)
+      } else {
+        await playSpeechSegments(target, speechSegments)
+      }
     } catch (error) {
       setSpeechError(error instanceof Error ? error.message : '语音合成失败。')
       clearSpeechAudio()
