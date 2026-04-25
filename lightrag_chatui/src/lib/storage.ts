@@ -16,7 +16,6 @@ export const defaultConfig: AppConfig = {
   apiKey: '',
   bearerToken: '',
   mode: 'mix',
-  answerStyle: 'grounded_rich',
   speechSettings: {}
 }
 
@@ -34,7 +33,9 @@ export const loadConfig = (): AppConfig => {
     const parsed = JSON.parse(raw) as Partial<AppConfig>
     return {
       ...defaultConfig,
-      ...parsed,
+      apiKey: parsed.apiKey ?? defaultConfig.apiKey,
+      bearerToken: parsed.bearerToken ?? defaultConfig.bearerToken,
+      mode: parsed.mode ?? defaultConfig.mode,
       baseUrl: defaultConfig.baseUrl,
       speechSettings: {
         ...defaultConfig.speechSettings,

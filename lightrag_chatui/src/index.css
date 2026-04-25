@@ -520,38 +520,6 @@ select:focus-visible {
   margin-left: auto;
 }
 
-.answer-style-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 42px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-soft);
-}
-
-.answer-style-switch button {
-  min-height: 32px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 9px;
-  color: var(--muted-strong);
-  background: transparent;
-  font-size: 0.88rem;
-  font-weight: 700;
-  transition:
-    color 160ms ease,
-    background 160ms ease,
-    box-shadow 160ms ease;
-}
-
-.answer-style-switch button.active {
-  color: var(--surface);
-  background: var(--accent);
-  box-shadow: var(--shadow-sm);
-}
-
 .icon-action {
   display: inline-grid;
   place-items: center;
@@ -1635,17 +1603,6 @@ select:focus-visible {
 
   .topbar-actions {
     margin-left: 0;
-  }
-
-  .answer-style-switch {
-    min-height: 38px;
-    padding: 3px;
-  }
-
-  .answer-style-switch button {
-    min-height: 30px;
-    padding: 0 9px;
-    font-size: 0.82rem;
   }
 
   .settings-overlay {

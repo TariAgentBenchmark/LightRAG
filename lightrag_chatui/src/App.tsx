@@ -19,7 +19,6 @@ import {
 import { loadConfig, loadSessions, saveConfig, saveSessions } from './lib/storage'
 import { remarkCitations } from './lib/remarkCitations'
 import type {
-  AnswerStyle,
   AppConfig,
   ChatMessage,
   ChatSession,
@@ -31,14 +30,6 @@ import type {
 } from './types/chat'
 
 const CHAT_HISTORY_TURNS = 4
-const ANSWER_STYLE_OPTIONS: Array<{
-  value: AnswerStyle
-  label: string
-  hint: string
-}> = [
-  { value: 'grounded_rich', label: '讲解', hint: '展开且严守引用' },
-  { value: 'concise', label: '精炼', hint: '短答但保留依据' }
-]
 
 const makeId = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -2398,7 +2389,6 @@ export default function App() {
         {
           query: content,
           mode: config.mode,
-          answer_style: config.answerStyle,
           stream: true,
           include_references: true,
           include_chunk_content: true,
@@ -2793,25 +2783,6 @@ export default function App() {
             <h2>经卷问答册</h2>
           </div>
           <div className="topbar-actions">
-            <div className="answer-style-switch" role="group" aria-label="回答风格">
-              {ANSWER_STYLE_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={config.answerStyle === option.value ? 'active' : ''}
-                  onClick={() =>
-                    setConfig((current) => ({
-                      ...current,
-                      answerStyle: option.value
-                    }))
-                  }
-                  aria-pressed={config.answerStyle === option.value}
-                  title={option.hint}
-                >
-                  <span>{option.label}</span>
-                </button>
-              ))}
-            </div>
             <button
               type="button"
               className="icon-action"
