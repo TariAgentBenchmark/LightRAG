@@ -99,6 +99,49 @@ def _get_tiktoken_encoding_for_model(model: str) -> Any:
     return _TIKTOKEN_ENCODING_CACHE[model]
 
 
+def _get_usage_value(usage: Any, key: str) -> int | None:
+    if usage is None:
+        return None
+    if isinstance(usage, dict):
+        value = usage.get(key)
+    else:
+        value = getattr(usage, key, None)
+    return value if isinstance(value, int) else None
+
+
+def _log_llm_token_usage(model: str, usage: Any, *, stream: bool) -> None:
+    prompt_tokens = _get_usage_value(usage, "prompt_tokens")
+    completion_tokens = _get_usage_value(usage, "completion_tokens")
+    total_tokens = _get_usage_value(usage, "total_tokens")
+    cache_hit_tokens = _get_usage_value(usage, "prompt_cache_hit_tokens")
+    cache_miss_tokens = _get_usage_value(usage, "prompt_cache_miss_tokens")
+
+    cache_total = (cache_hit_tokens or 0) + (cache_miss_tokens or 0)
+    cache_hit_rate = (
+        f"{(cache_hit_tokens or 0) / cache_total:.2%}" if cache_total > 0 else "n/a"
+    )
+
+    logger.info(
+        "LLM token usage model=%s stream=%s prompt_tokens=%s completion_tokens=%s "
+        "total_tokens=%s prompt_cache_hit_tokens=%s prompt_cache_miss_tokens=%s "
+        "prompt_cache_hit_rate=%s",
+        model,
+        stream,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cache_hit_tokens,
+        cache_miss_tokens,
+        cache_hit_rate,
+    )
+
+
+def _should_request_stream_usage(model: str, base_url: str | None) -> bool:
+    """DeepSeek returns cache counters in streaming only when usage is requested."""
+    target = f"{model} {base_url or ''}".lower()
+    return "deepseek" in target
+
+
 def create_openai_async_client(
     api_key: str | None = None,
     base_url: str | None = None,
@@ -317,6 +360,12 @@ async def openai_complete_if_cache(
     # Add explicit parameters back to kwargs so they're passed to OpenAI API
     if stream is not None:
         kwargs["stream"] = stream
+        if (
+            stream
+            and "stream_options" not in kwargs
+            and _should_request_stream_usage(model, base_url)
+        ):
+            kwargs["stream_options"] = {"include_usage": True}
     if timeout is not None:
         kwargs["timeout"] = timeout
 
@@ -446,6 +495,9 @@ async def openai_complete_if_cache(
                     cot_active = False
 
                 # After streaming is complete, track token usage
+                if final_chunk_usage:
+                    _log_llm_token_usage(api_model, final_chunk_usage, stream=True)
+
                 if token_tracker and final_chunk_usage:
                     # Use actual usage from the API
                     token_counts = {
@@ -598,15 +650,18 @@ async def openai_complete_if_cache(
             if r"\u" in final_content:
                 final_content = safe_unicode_decode(final_content.encode("utf-8"))
 
-            if token_tracker and hasattr(response, "usage"):
-                token_counts = {
-                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                    "completion_tokens": getattr(
-                        response.usage, "completion_tokens", 0
-                    ),
-                    "total_tokens": getattr(response.usage, "total_tokens", 0),
-                }
-                token_tracker.add_usage(token_counts)
+            if hasattr(response, "usage") and response.usage:
+                _log_llm_token_usage(api_model, response.usage, stream=False)
+
+                if token_tracker:
+                    token_counts = {
+                        "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                        "completion_tokens": getattr(
+                            response.usage, "completion_tokens", 0
+                        ),
+                        "total_tokens": getattr(response.usage, "total_tokens", 0),
+                    }
+                    token_tracker.add_usage(token_counts)
 
             logger.debug(f"Response content len: {len(final_content)}")
             verbose_debug(f"Response: {response}")

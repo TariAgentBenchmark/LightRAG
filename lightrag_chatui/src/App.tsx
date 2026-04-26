@@ -29,8 +29,6 @@ import type {
   SpeechVoiceOption
 } from './types/chat'
 
-const CHAT_HISTORY_TURNS = 4
-
 const makeId = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
@@ -364,20 +362,13 @@ const splitAnswerSections = (content: string) => {
   }
 }
 
-const buildConversationHistory = (messages: ChatMessage[], historyTurns: number) => {
-  const eligible = messages
+const buildConversationHistory = (messages: ChatMessage[]) =>
+  messages
     .filter((message) => !message.isStreaming && !message.error)
     .map((message) => ({
       role: message.role,
       content: message.content
     }))
-
-  if (historyTurns <= 0) {
-    return []
-  }
-
-  return eligible.slice(-historyTurns * 2)
-}
 
 const mergeWrappedLine = (left: string, right: string) => {
   if (!left) {
@@ -2381,7 +2372,7 @@ export default function App() {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
-    const conversationHistory = buildConversationHistory(baseMessages, CHAT_HISTORY_TURNS)
+    const conversationHistory = buildConversationHistory(baseMessages)
 
     try {
       await streamQuery(

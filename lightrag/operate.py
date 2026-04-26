@@ -122,10 +122,57 @@ def _is_definition_query(query: str) -> bool:
     return bool(query and _DEFINITION_QUERY_RE.search(query))
 
 
-def _get_effective_history_messages(query_param: QueryParam) -> list[dict[str, str]] | None:
+def _get_effective_history_messages(
+    query_param: QueryParam,
+) -> list[dict[str, str]] | None:
     if not query_param.use_conversation_history:
         return None
     return query_param.conversation_history or None
+
+
+RAG_CONTEXT_USER_MESSAGE_PLACEHOLDER = (
+    "The current turn's Context is provided in the user message under "
+    "`---Context---`. Treat that Context as the evidence source for this turn."
+)
+
+
+def _build_user_query_with_context(query: str, context: str) -> str:
+    return "\n\n".join(
+        [
+            "---User Query---",
+            query,
+            "---Context---",
+            context,
+        ]
+    )
+
+
+def _format_prompt_preview(
+    system_prompt: str,
+    history_messages: list[dict[str, str]] | None,
+    user_query: str,
+) -> str:
+    parts = [system_prompt]
+    for message in history_messages or []:
+        role = message.get("role", "unknown")
+        content = message.get("content", "")
+        parts.append(f"---History {role}---\n{content}")
+    parts.append(user_query)
+    return "\n\n".join(parts)
+
+
+def _count_history_tokens(
+    tokenizer: Tokenizer,
+    history_messages: list[dict[str, str]] | None,
+) -> int:
+    return sum(
+        len(
+            tokenizer.encode(
+                f"{message.get('role', '')}: {message.get('content', '')}"
+            )
+        )
+        for message in history_messages or []
+    )
 
 
 def _build_additional_prompt_instructions(query_param: QueryParam) -> str:
@@ -3926,20 +3973,32 @@ async def kg_query(
     sys_prompt = sys_prompt_temp.format(
         response_type=response_type,
         user_prompt=user_prompt,
-        context_data=context_result.context,
+        context_data=RAG_CONTEXT_USER_MESSAGE_PLACEHOLDER,
     )
 
-    user_query = query
+    user_query = _build_user_query_with_context(query, context_result.context)
+    history_messages = _get_effective_history_messages(effective_query_param)
+    has_history_messages = bool(history_messages)
 
     if query_param.only_need_prompt:
-        prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
+        prompt_content = _format_prompt_preview(
+            sys_prompt, history_messages, user_query
+        )
         return QueryResult(content=prompt_content, raw_data=context_result.raw_data)
 
     # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
-    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
+    query_tokens = len(tokenizer.encode(user_query))
+    system_tokens = len(tokenizer.encode(sys_prompt))
+    history_tokens = _count_history_tokens(tokenizer, history_messages)
+    len_of_prompts = query_tokens + system_tokens + history_tokens
     logger.debug(
-        f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
+        "[kg_query] Sending to LLM: %s tokens "
+        "(Query+Context: %s, History: %s, System: %s)",
+        f"{len_of_prompts:,}",
+        query_tokens,
+        history_tokens,
+        system_tokens,
     )
 
     # Handle cache
@@ -3963,9 +4022,19 @@ async def kg_query(
         effective_query_param.is_definition_query,
     )
 
-    cached_result = await handle_cache(
-        hashing_kv, args_hash, user_query, effective_query_param.mode, cache_type="query"
-    )
+    cached_result = None
+    if has_history_messages:
+        logger.debug(
+            "Skipping query result cache because conversation history is present"
+        )
+    else:
+        cached_result = await handle_cache(
+            hashing_kv,
+            args_hash,
+            user_query,
+            effective_query_param.mode,
+            cache_type="query",
+        )
 
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
@@ -3974,7 +4043,6 @@ async def kg_query(
         )
         response = cached_response
     else:
-        history_messages = _get_effective_history_messages(effective_query_param)
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,
@@ -3983,7 +4051,11 @@ async def kg_query(
             stream=effective_query_param.stream,
         )
 
-        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
+        if (
+            not has_history_messages
+            and hashing_kv
+            and hashing_kv.global_config.get("enable_llm_cache")
+        ):
             queryparam_dict = {
                 "mode": effective_query_param.mode,
                 "prompt_version": QUERY_RESPONSE_PROMPT_VERSION,
@@ -3998,7 +4070,9 @@ async def kg_query(
                 "user_prompt": effective_query_param.user_prompt or "",
                 "answer_style": effective_query_param.answer_style,
                 "enable_rerank": effective_query_param.enable_rerank,
-                "use_conversation_history": effective_query_param.use_conversation_history,
+                "use_conversation_history": (
+                    effective_query_param.use_conversation_history
+                ),
                 "retrieval_query": retrieval_query,
                 "is_definition_query": effective_query_param.is_definition_query,
             }
@@ -5803,13 +5877,17 @@ async def naive_query(
     sys_prompt = sys_prompt_template.format(
         response_type=effective_query_param.response_type,
         user_prompt=user_prompt,
-        content_data=context_content,
+        content_data=RAG_CONTEXT_USER_MESSAGE_PLACEHOLDER,
     )
 
-    user_query = query
+    user_query = _build_user_query_with_context(query, context_content)
+    history_messages = _get_effective_history_messages(effective_query_param)
+    has_history_messages = bool(history_messages)
 
     if query_param.only_need_prompt:
-        prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
+        prompt_content = _format_prompt_preview(
+            sys_prompt, history_messages, user_query
+        )
         return QueryResult(content=prompt_content, raw_data=raw_data)
 
     # Handle cache
@@ -5830,9 +5908,19 @@ async def naive_query(
         effective_query_param.use_conversation_history,
         effective_query_param.is_definition_query,
     )
-    cached_result = await handle_cache(
-        hashing_kv, args_hash, user_query, effective_query_param.mode, cache_type="query"
-    )
+    cached_result = None
+    if has_history_messages:
+        logger.debug(
+            "Skipping query result cache because conversation history is present"
+        )
+    else:
+        cached_result = await handle_cache(
+            hashing_kv,
+            args_hash,
+            user_query,
+            effective_query_param.mode,
+            cache_type="query",
+        )
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
         logger.info(
@@ -5840,7 +5928,6 @@ async def naive_query(
         )
         response = cached_response
     else:
-        history_messages = _get_effective_history_messages(effective_query_param)
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,
@@ -5849,7 +5936,11 @@ async def naive_query(
             stream=effective_query_param.stream,
         )
 
-        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
+        if (
+            not has_history_messages
+            and hashing_kv
+            and hashing_kv.global_config.get("enable_llm_cache")
+        ):
             queryparam_dict = {
                 "mode": effective_query_param.mode,
                 "prompt_version": QUERY_RESPONSE_PROMPT_VERSION,
