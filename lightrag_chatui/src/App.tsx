@@ -82,6 +82,7 @@ const STARTER_PROMPT_DECKS = [
 const STARTER_PROMPT_COUNT = 6
 const TTS_PREVIEW_TEXT = '道在日用之间，贵在清静自然。'
 const SPEECH_SEGMENT_MAX_CHARS = 180
+const MOBILE_SPEECH_FIRST_SEGMENT_MAX_CHARS = 90
 
 const VOICE_FILTERS = [
   { key: 'recommended', label: '推荐' },
@@ -1853,23 +1854,45 @@ export default function App() {
     }
   }
 
-  const createSpeechAudio = (target: string, blob: Blob, onEnded?: () => void) => {
-    releaseCurrentAudio()
+  const prepareSpeechAudio = (
+    target: string,
+    blob: Blob,
+    onEnded?: () => void,
+    reuseCurrent = false
+  ) => {
+    const shouldReuse =
+      reuseCurrent && audioRef.current && audioTargetRef.current === target
+    if (!shouldReuse) {
+      releaseCurrentAudio()
+    } else if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+      audioUrlRef.current = null
+    }
+
     const audioUrl = URL.createObjectURL(blob)
-    const audio = document.createElement('audio')
+    const audio = shouldReuse && audioRef.current ? audioRef.current : document.createElement('audio')
     audio.src = audioUrl
     audio.preload = 'auto'
     audio.volume = 1
     audio.muted = false
     audio.setAttribute('playsinline', 'true')
     audio.style.display = 'none'
-    document.body.appendChild(audio)
+    if (!shouldReuse) {
+      document.body.appendChild(audio)
+    }
+    audio.load()
     audioRef.current = audio
     audioUrlRef.current = audioUrl
     audioTargetRef.current = target
     attachSpeechAudioHandlers(audio, target, onEnded)
     return audio
   }
+
+  const createSpeechAudio = (target: string, blob: Blob, onEnded?: () => void) =>
+    prepareSpeechAudio(target, blob, onEnded)
+
+  const replaceSpeechAudio = (target: string, blob: Blob, onEnded?: () => void) =>
+    prepareSpeechAudio(target, blob, onEnded, true)
 
   const tryPlaySpeechAudio = async (target: string, blockedMessage: string) => {
     const audio = audioRef.current
@@ -1903,7 +1926,7 @@ export default function App() {
       config.speechSettings
     )
 
-  const shouldJoinSpeechSegmentsForPlayback = () => {
+  const shouldUseMobileProgressivePlayback = () => {
     const configuredFormat = speechProvider?.tts_audio_format?.toLocaleLowerCase()
     const canConcatenateAudio =
       !configuredFormat || configuredFormat === 'mp3' || configuredFormat === 'mpeg'
@@ -1965,6 +1988,9 @@ export default function App() {
       if (speechRunIdRef.current !== runId) {
         return
       }
+      if (!nextBlobPromise) {
+        return
+      }
 
       const blob = await nextBlobPromise
       nextBlobPromise =
@@ -1999,32 +2025,71 @@ export default function App() {
     }
   }
 
-  const playSpeechSegmentsAsSingleAudio = async (target: string, segments: string[]) => {
+  const playSpeechSegmentsWithMobilePrefetch = async (target: string, segments: string[]) => {
     const runId = speechRunIdRef.current
-    const blobs: Blob[] = []
-
-    for (const segment of segments) {
-      if (speechRunIdRef.current !== runId) {
-        return
-      }
-
-      const blob = await fetchSpeechSegment(segment)
-
-      if (speechRunIdRef.current !== runId) {
-        return
-      }
-
-      blobs.push(blob)
-    }
-
-    if (blobs.length === 0 || speechRunIdRef.current !== runId) {
+    const [firstSegment, ...remainingSegments] = segments
+    if (!firstSegment) {
       return
     }
 
-    createSpeechAudio(target, mergeSpeechBlobs(blobs), () => {
-      clearSpeechAudio()
+    const remainingBlobPromise =
+      remainingSegments.length > 0
+        ? (async () => {
+            const blobs: Blob[] = []
+
+            for (const segment of remainingSegments) {
+              if (speechRunIdRef.current !== runId) {
+                return null
+              }
+
+              blobs.push(await fetchSpeechSegment(segment))
+            }
+
+            if (blobs.length === 0 || speechRunIdRef.current !== runId) {
+              return null
+            }
+
+            return mergeSpeechBlobs(blobs)
+          })()
+        : null
+    remainingBlobPromise?.catch(() => undefined)
+
+    const firstBlob = await fetchSpeechSegment(firstSegment)
+    if (speechRunIdRef.current !== runId) {
+      return
+    }
+
+    const playRemaining = async () => {
+      if (!remainingBlobPromise || speechRunIdRef.current !== runId) {
+        clearSpeechAudio()
+        return
+      }
+
+      setPlayingAudioTarget(null)
+      setSpeechLoadingTarget(target)
+
+      try {
+        const remainingBlob = await remainingBlobPromise
+        if (!remainingBlob || speechRunIdRef.current !== runId) {
+          return
+        }
+
+        replaceSpeechAudio(target, remainingBlob, () => {
+          clearSpeechAudio()
+        })
+        await tryPlaySpeechAudio(target, '后续语音已准备好，请再点一次播放。')
+      } catch (error) {
+        setSpeechError(error instanceof Error ? error.message : '后续语音合成失败。')
+        clearSpeechAudio()
+      } finally {
+        setSpeechLoadingTarget((current) => (current === target ? null : current))
+      }
+    }
+
+    createSpeechAudio(target, firstBlob, () => {
+      void playRemaining()
     })
-    await tryPlaySpeechAudio(target, '语音已准备好，请再点一次播放。')
+    await tryPlaySpeechAudio(target, '语音已生成，请再点一次播放。')
   }
 
   const playSpeechText = async (
@@ -2047,14 +2112,19 @@ export default function App() {
     setSpeechLoadingTarget(target)
 
     try {
-      const speechSegments = splitSpeechSegments(text)
+      const speechSegments = splitSpeechSegments(
+        text,
+        shouldUseMobileProgressivePlayback()
+          ? MOBILE_SPEECH_FIRST_SEGMENT_MAX_CHARS
+          : SPEECH_SEGMENT_MAX_CHARS
+      )
       if (speechSegments.length === 0) {
         throw new Error(emptyMessage)
       }
 
       speechRunIdRef.current += 1
-      if (shouldJoinSpeechSegmentsForPlayback()) {
-        await playSpeechSegmentsAsSingleAudio(target, speechSegments)
+      if (shouldUseMobileProgressivePlayback()) {
+        await playSpeechSegmentsWithMobilePrefetch(target, speechSegments)
       } else {
         await playSpeechSegments(target, speechSegments)
       }
