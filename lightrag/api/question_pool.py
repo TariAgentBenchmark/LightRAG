@@ -172,7 +172,7 @@ def _question_similarity(left: str, right: str) -> float:
     right_chars = set(right_key)
     overlap_score = (
         len(left_chars & right_chars) / min(len(left_chars), len(right_chars))
-        if left_chars and right_chars
+        if left_chars and right_chars and min(len(left_chars), len(right_chars)) >= 4
         else 0.0
     )
     return max(bigram_score, overlap_score)

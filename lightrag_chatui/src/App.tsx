@@ -432,7 +432,7 @@ const starterQuestionSimilarity = (left: string, right: string) => {
   const rightChars = new Set([...rightKey])
   const sharedChars = [...leftChars].filter((item) => rightChars.has(item)).length
   const overlapScore =
-    leftChars.size > 0 && rightChars.size > 0
+    leftChars.size > 0 && rightChars.size > 0 && Math.min(leftChars.size, rightChars.size) >= 4
       ? sharedChars / Math.min(leftChars.size, rightChars.size)
       : 0
 
