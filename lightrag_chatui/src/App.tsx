@@ -451,7 +451,7 @@ const pickQuestionPoolPromptDeck = (
   }
 
   return {
-    label: '问题库随机',
+    label: '推荐问题',
     prompts: shuffle(questionPool).slice(0, STARTER_PROMPT_COUNT)
   }
 }
