@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
 import { streamQuery } from './api/lightrag'
+import { fetchQuestionPool } from './api/questionPool'
 import { createShare, fetchShare } from './api/share'
 import {
   createSpeechAsrSocket,
@@ -37,7 +38,12 @@ const makeId = () => {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-const STARTER_PROMPT_DECKS = [
+type StarterPromptDeck = {
+  label: string
+  prompts: string[]
+}
+
+const STARTER_PROMPT_DECKS: StarterPromptDeck[] = [
   {
     label: '入门发问',
     prompts: [
@@ -80,6 +86,7 @@ const STARTER_PROMPT_DECKS = [
 ]
 
 const STARTER_PROMPT_COUNT = 6
+const QUESTION_POOL_FETCH_LIMIT = 24
 const TTS_PREVIEW_TEXT = '道在日用之间，贵在清静自然。'
 const SPEECH_SEGMENT_MAX_CHARS = 180
 const MOBILE_SPEECH_FIRST_SEGMENT_MAX_CHARS = 90
@@ -360,6 +367,92 @@ const splitAnswerSections = (content: string) => {
     body: sections.body.join('\n').trim(),
     referencesMarkdown: sections.references.join('\n').trim(),
     followupQuestions: extractFollowupQuestions(sections.followups.join('\n'))
+  }
+}
+
+const STARTER_QUESTION_HINT_RE =
+  /[？?]|什么|为何|为什么|如何|怎么|怎样|是否|能否|是不是|区别|关系|意义|含义|理解|解释|是什么/
+const STARTER_CONTEXT_DEPENDENT_RE =
+  /^(这个|那个|上面|前面|刚才|继续|再讲|展开|详细说|这段|这些|那些|它|他说|其)/
+
+const normalizeStarterQuestion = (text: string) =>
+  text
+    .replace(/\[(\^?\d+(?:\s*,\s*\d+)*)\]/g, '')
+    .replace(/^[-*+]\s+/, '')
+    .replace(/^\d+[.)、．]\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, '')
+
+const isStarterQuestionCandidate = (question: string) =>
+  question.length >= 4 &&
+  question.length <= 80 &&
+  STARTER_QUESTION_HINT_RE.test(question) &&
+  !STARTER_CONTEXT_DEPENDENT_RE.test(question)
+
+const addStarterQuestion = (
+  questions: string[],
+  seen: Set<string>,
+  candidate: string
+) => {
+  const question = normalizeStarterQuestion(candidate)
+  const key = question.toLocaleLowerCase('zh-CN')
+  if (!question || seen.has(key) || !isStarterQuestionCandidate(question)) {
+    return
+  }
+
+  seen.add(key)
+  questions.push(question)
+}
+
+const collectSessionStarterQuestions = (sessions: ChatSession[]) => {
+  const questions: string[] = []
+  const seen = new Set<string>()
+
+  for (const session of sessions) {
+    for (const message of session.messages) {
+      if (message.role === 'user') {
+        addStarterQuestion(questions, seen, message.content)
+        continue
+      }
+
+      const followupQuestions = splitAnswerSections(message.content).followupQuestions
+      for (const followupQuestion of followupQuestions) {
+        addStarterQuestion(questions, seen, followupQuestion)
+      }
+    }
+  }
+
+  return questions
+}
+
+const pickQuestionPoolPromptDeck = (
+  serverQuestions: string[],
+  sessions: ChatSession[]
+): StarterPromptDeck => {
+  const dynamicQuestions: string[] = []
+  const seen = new Set<string>()
+
+  for (const question of serverQuestions) {
+    addStarterQuestion(dynamicQuestions, seen, question)
+  }
+  for (const question of collectSessionStarterQuestions(sessions)) {
+    addStarterQuestion(dynamicQuestions, seen, question)
+  }
+
+  if (dynamicQuestions.length === 0) {
+    return pickStarterPromptDeck()
+  }
+
+  const staticQuestions = STARTER_PROMPT_DECKS.flatMap((deck) => deck.prompts)
+  const questionPool = [...dynamicQuestions]
+  for (const question of staticQuestions) {
+    addStarterQuestion(questionPool, seen, question)
+  }
+
+  return {
+    label: '问题库随机',
+    prompts: shuffle(questionPool).slice(0, STARTER_PROMPT_COUNT)
   }
 }
 
@@ -1368,6 +1461,7 @@ export default function App() {
   const [speechSettingsLoading, setSpeechSettingsLoading] = useState(false)
   const [speechSettingsError, setSpeechSettingsError] = useState('')
   const [previewLoadingSpeaker, setPreviewLoadingSpeaker] = useState<string | null>(null)
+  const [serverStarterQuestions, setServerStarterQuestions] = useState<string[]>([])
   const [starterPromptDeck, setStarterPromptDeck] = useState(() => pickStarterPromptDeck())
   const [touchReference, setTouchReference] = useState<{
     messageId: string
@@ -1476,6 +1570,41 @@ export default function App() {
   }, [config.apiKey, config.baseUrl, config.bearerToken])
 
   useEffect(() => {
+    let cancelled = false
+
+    const loadQuestionPool = async () => {
+      try {
+        const response = await fetchQuestionPool(
+          config.baseUrl,
+          {
+            apiKey: config.apiKey,
+            bearerToken: config.bearerToken
+          },
+          QUESTION_POOL_FETCH_LIMIT
+        )
+
+        if (!cancelled) {
+          setServerStarterQuestions(
+            response.questions
+              .map((item) => item.question)
+              .filter((item) => item.trim().length > 0)
+          )
+        }
+      } catch {
+        if (!cancelled) {
+          setServerStarterQuestions([])
+        }
+      }
+    }
+
+    void loadQuestionPool()
+
+    return () => {
+      cancelled = true
+    }
+  }, [config.apiKey, config.baseUrl, config.bearerToken])
+
+  useEffect(() => {
     saveSessions(sessions)
   }, [sessions])
 
@@ -1488,6 +1617,12 @@ export default function App() {
   const currentSession =
     sessions.find((session) => session.id === currentSessionId) ?? null
   const messages = currentSession?.messages ?? []
+
+  useEffect(() => {
+    if (messages.length === 0) {
+      setStarterPromptDeck(pickQuestionPoolPromptDeck(serverStarterQuestions, sessions))
+    }
+  }, [messages.length, serverStarterQuestions, sessions])
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -2879,7 +3014,11 @@ export default function App() {
                 <button
                   type="button"
                   className="text-button"
-                  onClick={() => setStarterPromptDeck(pickStarterPromptDeck())}
+                  onClick={() =>
+                    setStarterPromptDeck(
+                      pickQuestionPoolPromptDeck(serverStarterQuestions, sessions)
+                    )
+                  }
                 >
                   <ButtonIcon name="refresh" />
                   换一组

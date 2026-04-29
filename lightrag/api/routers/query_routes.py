@@ -2,11 +2,14 @@
 This module contains all query-related routes for the LightRAG API.
 """
 
+import asyncio
 import json
 import re
+import os
 from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
+from lightrag.api.question_pool import QuestionPoolService
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
@@ -578,8 +581,37 @@ class StreamChunkResponse(BaseModel):
     )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+def create_query_routes(
+    rag,
+    api_key: Optional[str] = None,
+    top_k: int = 60,
+    working_dir: str | os.PathLike[str] | None = None,
+):
     combined_auth = get_combined_auth_dependency(api_key)
+    question_pool = QuestionPoolService(working_dir)
+
+    def log_question_pool_task_failure(completed: asyncio.Task) -> None:
+        if completed.cancelled():
+            return
+        error = completed.exception()
+        if error:
+            logger.warning("Question pool background task failed: %s", error)
+
+    def schedule_question_pool_screening(user_question: str, answer: str | None) -> None:
+        if not answer:
+            return
+
+        try:
+            task = asyncio.create_task(
+                question_pool.screen_and_store(
+                    user_question=user_question,
+                    answer=answer,
+                    llm_func=rag.llm_model_func,
+                )
+            )
+            task.add_done_callback(log_question_pool_task_failure)
+        except RuntimeError as exc:
+            logger.warning("Failed to schedule question pool screening: %s", exc)
 
     def enrich_references(
         references: List[Dict[str, Any]],
@@ -928,6 +960,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     response_content, reference_id_map
                 )
 
+            schedule_question_pool_screening(request.query, response_content)
+
             # Return response with or without references based on request
             if request.include_references:
                 return QueryResponse(response=response_content, references=references)
@@ -1176,6 +1210,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     if response_stream:
                         sanitizer = StreamingCitationSanitizer(reference_id_map)
                         sanitized_chunks: list[str] = []
+                        final_response_for_pool: str | None = None
                         try:
                             async for chunk in response_stream:
                                 if chunk:  # Only send non-empty content
@@ -1193,12 +1228,19 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                         "".join(sanitized_chunks), references
                                     )
                                 )
+                                final_response_for_pool = final_response
                                 yield (
                                     f"{json.dumps({'response_final': final_response, 'references': final_references})}\n"
                                 )
+                            else:
+                                final_response_for_pool = "".join(sanitized_chunks)
                         except Exception as e:
                             logger.error(f"Streaming error: {str(e)}")
                             yield f"{json.dumps({'error': str(e)})}\n"
+                        if final_response_for_pool:
+                            schedule_question_pool_screening(
+                                request.query, final_response_for_pool
+                            )
                 else:
                     # Non-streaming mode: send complete response in one message
                     response_content = llm_response.get("content", "")
@@ -1219,6 +1261,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         complete_response["references"] = references
 
                     yield f"{json.dumps(complete_response)}\n"
+                    schedule_question_pool_screening(request.query, response_content)
 
             return StreamingResponse(
                 stream_generator(),

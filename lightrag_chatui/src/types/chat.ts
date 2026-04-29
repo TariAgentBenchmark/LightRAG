@@ -103,6 +103,17 @@ export type ShareGetResponse = {
   payload: SharePayload
 }
 
+export type QuestionPoolItem = {
+  id: string
+  question: string
+  category: string
+}
+
+export type QuestionPoolResponse = {
+  status: 'ok'
+  questions: QuestionPoolItem[]
+}
+
 export type StreamEvent =
   | { type: 'references'; references: ReferenceItem[] }
   | { type: 'response'; chunk: string }
