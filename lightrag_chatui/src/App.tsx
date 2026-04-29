@@ -3010,7 +3010,7 @@ export default function App() {
               <p className="empty-kicker">起问引子</p>
               <h3>从一条问题开始，让典籍自己发声</h3>
               <div className="empty-prompt-header">
-                <p>本次引子：{starterPromptDeck.label}</p>
+                <p>可以从这些问题开始</p>
                 <button
                   type="button"
                   className="text-button"
