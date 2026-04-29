@@ -374,6 +374,9 @@ const STARTER_QUESTION_HINT_RE =
   /[？?]|什么|为何|为什么|如何|怎么|怎样|是否|能否|是不是|区别|关系|意义|含义|理解|解释|是什么/
 const STARTER_CONTEXT_DEPENDENT_RE =
   /^(这个|那个|上面|前面|刚才|继续|再讲|展开|详细说|这段|这些|那些|它|他说|其)/
+const STARTER_SEMANTIC_FILLER_RE =
+  /什么是|是什么|什么叫|如何理解|怎么理解|怎样理解|为什么|为何|有何|有什么|能否|是否|是不是|哪些|哪种|请问|请|的含义|的意义|含义|意义|关系|区别|体现|应该|可以|在修行中|在修炼中|修行中|修炼中|修持中|对修行|对修炼|意味着什么|指什么|怎么体现|如何体现|[的了呢啊吗么]|[？?]/g
+const STARTER_SIMILARITY_THRESHOLD = 0.72
 
 const normalizeStarterQuestion = (text: string) =>
   text
@@ -390,6 +393,52 @@ const isStarterQuestionCandidate = (question: string) =>
   STARTER_QUESTION_HINT_RE.test(question) &&
   !STARTER_CONTEXT_DEPENDENT_RE.test(question)
 
+const starterQuestionKey = (question: string) => {
+  const normalized = question
+    .toLocaleLowerCase('zh-CN')
+    .replace(/[^\w\u4e00-\u9fff]+/g, '')
+  return normalized.replace(STARTER_SEMANTIC_FILLER_RE, '') || normalized
+}
+
+const starterQuestionBigrams = (text: string) => {
+  if (text.length < 2) {
+    return text ? new Set([text]) : new Set<string>()
+  }
+
+  const bigrams = new Set<string>()
+  for (let index = 0; index < text.length - 1; index += 1) {
+    bigrams.add(text.slice(index, index + 2))
+  }
+  return bigrams
+}
+
+const starterQuestionSimilarity = (left: string, right: string) => {
+  const leftKey = starterQuestionKey(left)
+  const rightKey = starterQuestionKey(right)
+  if (!leftKey || !rightKey) {
+    return 0
+  }
+  if (leftKey === rightKey) {
+    return 1
+  }
+
+  const leftBigrams = starterQuestionBigrams(leftKey)
+  const rightBigrams = starterQuestionBigrams(rightKey)
+  const sharedBigrams = [...leftBigrams].filter((item) => rightBigrams.has(item)).length
+  const bigramUnion = new Set([...leftBigrams, ...rightBigrams]).size
+  const bigramScore = bigramUnion > 0 ? sharedBigrams / bigramUnion : 0
+
+  const leftChars = new Set([...leftKey])
+  const rightChars = new Set([...rightKey])
+  const sharedChars = [...leftChars].filter((item) => rightChars.has(item)).length
+  const overlapScore =
+    leftChars.size > 0 && rightChars.size > 0
+      ? sharedChars / Math.min(leftChars.size, rightChars.size)
+      : 0
+
+  return Math.max(bigramScore, overlapScore)
+}
+
 const addStarterQuestion = (
   questions: string[],
   seen: Set<string>,
@@ -397,7 +446,15 @@ const addStarterQuestion = (
 ) => {
   const question = normalizeStarterQuestion(candidate)
   const key = question.toLocaleLowerCase('zh-CN')
-  if (!question || seen.has(key) || !isStarterQuestionCandidate(question)) {
+  if (
+    !question ||
+    seen.has(key) ||
+    !isStarterQuestionCandidate(question) ||
+    questions.some(
+      (existingQuestion) =>
+        starterQuestionSimilarity(existingQuestion, question) >= STARTER_SIMILARITY_THRESHOLD
+    )
+  ) {
     return
   }
 

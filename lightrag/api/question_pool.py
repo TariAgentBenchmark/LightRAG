@@ -59,6 +59,12 @@ _MAX_CANDIDATES_PER_ANSWER = int(
 )
 _QUESTION_MIN_CHARS = int(os.getenv("LIGHTRAG_QUESTION_POOL_MIN_CHARS", "4"))
 _QUESTION_MAX_CHARS = int(os.getenv("LIGHTRAG_QUESTION_POOL_MAX_CHARS", "80"))
+_DISPLAY_CATEGORY_SOFT_LIMIT = int(
+    os.getenv("LIGHTRAG_QUESTION_POOL_DISPLAY_CATEGORY_LIMIT", "2")
+)
+_DISPLAY_SIMILARITY_THRESHOLD = float(
+    os.getenv("LIGHTRAG_QUESTION_POOL_DISPLAY_SIMILARITY_THRESHOLD", "0.72")
+)
 
 _FOLLOWUP_HEADER_RE = re.compile(
     r"^\s{0,3}#{1,6}\s*(?:延伸追问|follow[-\s]*up questions?)\s*$",
@@ -82,6 +88,16 @@ _CONTEXT_DEPENDENT_RE = re.compile(
 )
 _PRIVATE_RE = re.compile(
     r"(?:\b1[3-9]\d{9}\b|[\w.+-]+@[\w.-]+\.\w+|微信|手机号|电话|地址|身份证|银行卡|账号|密码)"
+)
+_QUESTION_SEMANTIC_FILLER_RE = re.compile(
+    r"(?:"
+    r"什么是|是什么|什么叫|如何理解|怎么理解|怎样理解|为什么|为何|"
+    r"有何|有什么|能否|是否|是不是|哪些|哪种|请问|请|"
+    r"的含义|的意义|含义|意义|关系|区别|体现|应该|可以|"
+    r"在修行中|在修炼中|修行中|修炼中|修持中|"
+    r"对修行|对修炼|意味着什么|指什么|怎么体现|如何体现|"
+    r"[的了呢啊吗么]|[？?]"
+    r")"
 )
 
 
@@ -121,6 +137,45 @@ def _stable_id(text: str) -> str:
 def _dedupe_key(text: str) -> str:
     normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", text.lower())
     return normalized[:120]
+
+
+def _semantic_key(text: str) -> str:
+    key = _dedupe_key(text)
+    semantic_key = _QUESTION_SEMANTIC_FILLER_RE.sub("", key)
+    return semantic_key or key
+
+
+def _bigrams(text: str) -> set[str]:
+    if len(text) < 2:
+        return {text} if text else set()
+    return {text[index : index + 2] for index in range(len(text) - 1)}
+
+
+def _question_similarity(left: str, right: str) -> float:
+    left_key = _semantic_key(left)
+    right_key = _semantic_key(right)
+    if not left_key or not right_key:
+        return 0.0
+    if left_key == right_key:
+        return 1.0
+
+    left_bigrams = _bigrams(left_key)
+    right_bigrams = _bigrams(right_key)
+    bigram_union = left_bigrams | right_bigrams
+    bigram_score = (
+        len(left_bigrams & right_bigrams) / len(bigram_union)
+        if bigram_union
+        else 0.0
+    )
+
+    left_chars = set(left_key)
+    right_chars = set(right_key)
+    overlap_score = (
+        len(left_chars & right_chars) / min(len(left_chars), len(right_chars))
+        if left_chars and right_chars
+        else 0.0
+    )
+    return max(bigram_score, overlap_score)
 
 
 def _clean_question(raw: str) -> str:
@@ -305,6 +360,40 @@ def _write_pool(path: Path, data: dict[str, Any]) -> None:
     temp.replace(path)
 
 
+def _select_diverse_questions(items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    category_counts: dict[str, int] = {}
+
+    def can_add(item: dict[str, Any], enforce_category_limit: bool) -> bool:
+        question = str(item.get("question", ""))
+        category = str(item.get("category", "推荐问题"))
+
+        if (
+            enforce_category_limit
+            and category_counts.get(category, 0) >= _DISPLAY_CATEGORY_SOFT_LIMIT
+        ):
+            return False
+
+        return all(
+            _question_similarity(question, str(selected_item.get("question", "")))
+            < _DISPLAY_SIMILARITY_THRESHOLD
+            for selected_item in selected
+        )
+
+    for enforce_category_limit in (True, False):
+        for item in items:
+            if len(selected) >= limit:
+                return selected
+            if item in selected or not can_add(item, enforce_category_limit):
+                continue
+
+            selected.append(item)
+            category = str(item.get("category", "推荐问题"))
+            category_counts[category] = category_counts.get(category, 0) + 1
+
+    return selected
+
+
 class QuestionPoolService:
     def __init__(self, working_dir: str | os.PathLike[str] | None = None):
         self.path = _resolve_pool_file(working_dir)
@@ -339,13 +428,14 @@ class QuestionPoolService:
                 and int(item.get("quality_score", 0)) >= _MIN_QUALITY_SCORE
             ]
             random.shuffle(items)
+            selected_items = _select_diverse_questions(items, safe_limit)
             return [
                 {
                     "id": str(item.get("id", "")),
                     "question": item["question"],
                     "category": str(item.get("category", "推荐问题")),
                 }
-                for item in items[:safe_limit]
+                for item in selected_items
             ]
 
         return self._with_lock(False, read_questions)
@@ -446,4 +536,3 @@ class QuestionPoolService:
             raise
         except Exception as exc:
             logger.warning("Question pool screening failed: %s", exc)
-
