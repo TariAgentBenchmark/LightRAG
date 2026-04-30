@@ -1452,7 +1452,7 @@ const MessageCard = ({
                     onClick={() => onShare(message, relatedQuestion)}
                   >
                     <ButtonIcon name="share" />
-                    分享
+                    分享本问
                   </button>
                   <button
                     type="button"
@@ -2755,7 +2755,30 @@ export default function App() {
     showUiStatus('浏览器复制受限，已下载文本文件。', 'success')
   }
 
-  const buildSharePayload = (fallbackMessage: ChatMessage, relatedQuestion: string): SharePayload => {
+  const buildSingleAnswerSharePayload = (
+    message: ChatMessage,
+    relatedQuestion: string
+  ): SharePayload => ({
+    title: summarizeQuestion(relatedQuestion || '分享问答'),
+    messages: [
+      {
+        id: `share-question-${message.createdAt}`,
+        role: 'user' as const,
+        content: relatedQuestion,
+        createdAt: message.createdAt
+      },
+      {
+        id: `share-answer-${message.createdAt}`,
+        role: 'assistant' as const,
+        content: message.content,
+        references: message.references ?? [],
+        createdAt: message.createdAt + 1
+      }
+    ].filter((shareMessage) => shareMessage.content.trim()),
+    createdAt: Date.now()
+  })
+
+  const buildSessionSharePayload = (): SharePayload | null => {
     const shareMessages = (currentSession?.messages ?? [])
       .filter((message) => !message.isStreaming && !message.error && message.content.trim())
       .map((message) => ({
@@ -2766,40 +2789,30 @@ export default function App() {
         references: message.references ?? []
       }))
 
-    if (shareMessages.length > 0) {
-      return {
-        title: currentSession?.title ?? summarizeQuestion(relatedQuestion || '分享会话'),
-        messages: shareMessages,
-        createdAt: Date.now()
-      }
+    if (shareMessages.length === 0) {
+      return null
     }
 
     return {
-      title: summarizeQuestion(relatedQuestion || '分享问答'),
-      messages: [
-        {
-          id: `share-question-${fallbackMessage.createdAt}`,
-          role: 'user',
-          content: relatedQuestion,
-          createdAt: fallbackMessage.createdAt
-        },
-        {
-          id: `share-answer-${fallbackMessage.createdAt}`,
-          role: 'assistant',
-          content: fallbackMessage.content,
-          references: fallbackMessage.references ?? [],
-          createdAt: fallbackMessage.createdAt + 1
-        }
-      ].filter((message) => message.content.trim()),
+      title: currentSession?.title ?? '分享会话',
+      messages: shareMessages,
       createdAt: Date.now()
     }
   }
 
-  const handleShareAnswer = async (message: ChatMessage, relatedQuestion: string) => {
+  const sharePayload = async (
+    payload: SharePayload,
+    shareText: string,
+    statusText: {
+      opened: string
+      copied: string
+      manual: string
+      failed: string
+    }
+  ) => {
     let shareUrl: URL | null = null
 
     try {
-      const payload = buildSharePayload(message, relatedQuestion)
       const response = await createShare(config.baseUrl, payload, {
         apiKey: config.apiKey,
         bearerToken: config.bearerToken
@@ -2807,21 +2820,20 @@ export default function App() {
       shareUrl = new URL(window.location.href)
       shareUrl.searchParams.set('share', response.share_id)
       shareUrl.hash = ''
-      const shareText = buildAnswerExportText(relatedQuestion, message)
 
       if (navigator.share && window.isSecureContext) {
         await navigator.share({
-          title: payload.title ?? summarizeQuestion(relatedQuestion || '玄德问答'),
+          title: payload.title ?? '经卷问答册',
           text: shareText,
           url: shareUrl.toString()
         })
-        showUiStatus('分享面板已打开。')
+        showUiStatus(statusText.opened)
         return
       }
 
       const copied = await copyTextWithFallback(shareUrl.toString())
       if (copied) {
-        showUiStatus('分享链接已复制。')
+        showUiStatus(statusText.copied)
         return
       }
     } catch (error) {
@@ -2832,11 +2844,43 @@ export default function App() {
 
     if (shareUrl) {
       openManualCopyPrompt('请复制以下分享链接', shareUrl.toString())
-      showUiStatus('已生成分享链接，请手动复制。')
+      showUiStatus(statusText.manual)
       return
     }
 
-    showUiStatus('分享链接生成失败，请稍后再试。', 'error')
+    showUiStatus(statusText.failed, 'error')
+  }
+
+  const handleShareAnswer = async (message: ChatMessage, relatedQuestion: string) => {
+    await sharePayload(
+      buildSingleAnswerSharePayload(message, relatedQuestion),
+      buildAnswerExportText(relatedQuestion, message),
+      {
+        opened: '本问分享面板已打开。',
+        copied: '本问分享链接已复制。',
+        manual: '已生成本问分享链接，请手动复制。',
+        failed: '本问分享链接生成失败，请稍后再试。'
+      }
+    )
+  }
+
+  const handleShareSession = async () => {
+    const payload = buildSessionSharePayload()
+    if (!payload) {
+      showUiStatus('当前没有可分享的会话内容。', 'error')
+      return
+    }
+
+    await sharePayload(
+      payload,
+      `分享完整会话：${payload.title ?? '经卷问答册'}`,
+      {
+        opened: '全卷分享面板已打开。',
+        copied: '全卷分享链接已复制。',
+        manual: '已生成全卷分享链接，请手动复制。',
+        failed: '全卷分享链接生成失败，请稍后再试。'
+      }
+    )
   }
 
   const handleDownloadPdf = async (message: ChatMessage, relatedQuestion: string) => {
@@ -3036,6 +3080,18 @@ export default function App() {
             <h2>经卷问答册</h2>
           </div>
           <div className="topbar-actions">
+            {hasMessages && (
+              <button
+                type="button"
+                className="topbar-share-button"
+                onClick={() => void handleShareSession()}
+                aria-label="分享整个会话"
+                title="分享整个会话"
+              >
+                <ButtonIcon name="share" />
+                <span>分享全卷</span>
+              </button>
+            )}
             <button
               type="button"
               className="icon-action"

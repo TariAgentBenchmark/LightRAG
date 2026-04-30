@@ -520,6 +520,26 @@ select:focus-visible {
   margin-left: auto;
 }
 
+.topbar-share-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--accent-strong);
+  background: var(--surface);
+  font-size: 0.82rem;
+  font-weight: 800;
+  white-space: nowrap;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease;
+}
+
 .icon-action {
   display: inline-grid;
   place-items: center;
@@ -537,6 +557,7 @@ select:focus-visible {
     color 160ms ease;
 }
 
+.topbar-share-button:hover,
 .icon-action:hover {
   border-color: var(--line-strong);
   color: var(--accent-strong);
@@ -1605,6 +1626,11 @@ select:focus-visible {
     margin-left: 0;
   }
 
+  .topbar-share-button {
+    min-height: 40px;
+    padding: 0 12px;
+  }
+
   .settings-overlay {
     align-items: end;
     padding:
@@ -1789,6 +1815,15 @@ select:focus-visible {
 
   .topbar h2 {
     font-size: 0.98rem;
+  }
+
+  .topbar-share-button {
+    width: 42px;
+    padding: 0;
+  }
+
+  .topbar-share-button span {
+    display: none;
   }
 
   .chat-thread {
