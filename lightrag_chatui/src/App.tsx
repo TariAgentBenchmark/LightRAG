@@ -1049,6 +1049,24 @@ const isMobileBrowser = () =>
     navigator.userAgent
   )
 
+const shouldIncludeFullReferenceContent = () => !isMobileBrowser()
+
+const formatStreamErrorMessage = (error: unknown) => {
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return '已停止生成。'
+  }
+
+  if (error instanceof Error) {
+    if (/Load failed|Failed to fetch|NetworkError|network connection was lost/i.test(error.message)) {
+      return '网络连接中断，请检查网络后重试。'
+    }
+
+    return error.message
+  }
+
+  return '请求失败'
+}
+
 const downloadTextFile = (filename: string, content: string, mimeType: string) => {
   const blob = new Blob([content], { type: `${mimeType};charset=utf-8` })
   const url = URL.createObjectURL(blob)
@@ -2644,7 +2662,7 @@ export default function App() {
           mode: config.mode,
           stream: true,
           include_references: true,
-          include_chunk_content: true,
+          include_chunk_content: shouldIncludeFullReferenceContent(),
           conversation_history: conversationHistory,
           use_conversation_history: conversationHistory.length > 0
         },
@@ -2698,12 +2716,7 @@ export default function App() {
         }
       )
     } catch (error) {
-      const message =
-        error instanceof DOMException && error.name === 'AbortError'
-          ? '已停止生成。'
-          : error instanceof Error
-            ? error.message
-            : '请求失败'
+      const message = formatStreamErrorMessage(error)
 
       upsertSession(sessionId, (session) => ({
         ...session,
