@@ -15,6 +15,8 @@ from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
 
 router = APIRouter(tags=["query"])
+REFERENCE_PREVIEW_MAX_CHARS = 1200
+REFERENCE_PREVIEW_CHUNK_LIMIT = 4
 
 
 _INLINE_CITATION_RE = re.compile(r"\[(\^?\d+(?:\s*,\s*\d+)*)\]")
@@ -73,11 +75,18 @@ def _extract_structural_heading(content: str) -> str | None:
     return None
 
 
-def _build_reference_preview(content: str, max_chars: int = 140) -> str | None:
-    if not content:
+def _build_reference_preview(
+    contents: list[str], max_chars: int = REFERENCE_PREVIEW_MAX_CHARS
+) -> str | None:
+    if not contents:
         return None
 
-    normalized = re.sub(r"\s+", " ", content).strip()
+    preview_source = "\n\n".join(
+        str(content).strip()
+        for content in contents[:REFERENCE_PREVIEW_CHUNK_LIMIT]
+        if str(content).strip()
+    )
+    normalized = re.sub(r"\s+", " ", preview_source).strip()
     if not normalized:
         return None
     if len(normalized) <= max_chars:
@@ -533,7 +542,7 @@ class ReferenceItem(BaseModel):
     )
     preview: Optional[str] = Field(
         default=None,
-        description="Short preview text built from the first referenced chunk",
+        description="Preview text built from referenced chunks when full chunk content is not included",
     )
     matched_terms: Optional[List[str]] = Field(
         default=None,
@@ -705,7 +714,7 @@ def create_query_routes(
                     ref_copy["chunk_order_indices"] = sorted(set(chunk_order_indices))
 
                 location_label = _build_reference_location_label(chunk_order_indices, heading)
-                preview = _build_reference_preview(first_chunk_content)
+                preview = _build_reference_preview(chunk_contents)
                 if location_label:
                     ref_copy["location_label"] = location_label
                 if preview:
