@@ -302,9 +302,7 @@ const splitSpeechSegments = (text: string, maxChars = SPEECH_SEGMENT_MAX_CHARS) 
 
 const referenceSpeakableText = (reference: ReferenceItem) => {
   const title = summarizePath(reference.file_path)
-  const snippets = (reference.content ?? [])
-    .reduce<string[]>((items, snippet) => items.concat(normalizeSnippet(snippet)), [])
-    .filter(Boolean)
+  const snippets = referenceDisplayParagraphs(reference)
 
   return toSpeakableText(
     [title ? `参考材料 ${title}` : '', snippets.join(' ')].filter(Boolean).join('。 ')
@@ -565,8 +563,41 @@ const normalizeSnippet = (snippet: string) => {
 
 const snippetParagraphs = (snippet?: string) => {
   const paragraphs = normalizeSnippet(snippet ?? '')
-  return paragraphs.length > 0 ? paragraphs : ['当前引用未包含 chunk 内容。']
+  return paragraphs.length > 0 ? paragraphs : ['当前暂无可展示的引用片段。']
 }
+
+const referenceDisplaySnippets = (reference: ReferenceItem) => {
+  const contentSnippets = (reference.content ?? [])
+    .map((snippet) => snippet.trim())
+    .filter(Boolean)
+
+  if (contentSnippets.length > 0) {
+    return contentSnippets
+  }
+
+  const locationLabel = reference.location_label?.trim() ?? ''
+  const preview = reference.preview?.trim() ?? ''
+
+  if (locationLabel && preview && !preview.startsWith(locationLabel)) {
+    return [`${locationLabel}\n\n${preview}`]
+  }
+
+  if (preview) {
+    return [preview]
+  }
+
+  if (locationLabel) {
+    return [locationLabel]
+  }
+
+  return ['当前仅显示引用出处，未加载原文片段。']
+}
+
+const referenceDisplayParagraphs = (reference: ReferenceItem) =>
+  referenceDisplaySnippets(reference)
+    .reduce<string[]>((items, snippet) => items.concat(snippetParagraphs(snippet)), [])
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
 
 const getMessageQuestion = (messages: ChatMessage[], messageId: string) => {
   const messageIndex = messages.findIndex((message) => message.id === messageId)
@@ -589,10 +620,7 @@ const buildReferenceLines = (references?: ReferenceItem[]) => {
   }
 
   return references.reduce<string[]>((lines, reference) => {
-    const paragraphs = (reference.content ?? [])
-      .reduce<string[]>((items, snippet) => items.concat(snippetParagraphs(snippet)), [])
-      .map((paragraph) => paragraph.trim())
-      .filter(Boolean)
+    const paragraphs = referenceDisplayParagraphs(reference)
 
     if (paragraphs.length === 0) {
       lines.push(`[${reference.reference_id}] ${summarizePath(reference.file_path)}`)
@@ -765,17 +793,14 @@ const buildStructuredReferencesHtml = (references?: ReferenceItem[]) => {
 
   return orderedReferences
     .map((reference) => {
-      const paragraphs = (reference.content ?? [])
-        .reduce<string[]>((items, snippet) => items.concat(snippetParagraphs(snippet)), [])
-        .map((paragraph) => paragraph.trim())
-        .filter(Boolean)
+      const paragraphs = referenceDisplayParagraphs(reference)
       const title = summarizePath(reference.file_path)
       const body =
         paragraphs.length > 0
           ? paragraphs
               .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`)
               .join('')
-          : '<p class="reference-empty">当前引用未包含 chunk 内容。</p>'
+          : '<p class="reference-empty">当前仅显示引用出处，未加载原文片段。</p>'
 
       return `<article class="reference-entry">
         <h3><span>[${escapeHtml(reference.reference_id)}]</span>${escapeHtml(title)}</h3>
@@ -3664,7 +3689,7 @@ export default function App() {
             </div>
           )}
           <div className="floating-reference-content">
-            {(hoverReference.content ?? ['当前引用未包含 chunk 内容。']).map((snippet, index) => (
+            {referenceDisplaySnippets(hoverReference).map((snippet, index) => (
               <blockquote key={`${hoverReference.reference_id}-hover-${index}`}>
                 {snippetParagraphs(snippet).map((paragraph, paragraphIndex) => (
                   <p key={`${hoverReference.reference_id}-hover-${index}-${paragraphIndex}`}>
@@ -3735,7 +3760,7 @@ export default function App() {
               </div>
             )}
             <div className="sheet-content">
-              {(touchMessageReference.content ?? ['当前引用未包含 chunk 内容。']).map((snippet, index) => (
+              {referenceDisplaySnippets(touchMessageReference).map((snippet, index) => (
                 <blockquote key={`${touchMessageReference.reference_id}-touch-${index}`}>
                   {snippetParagraphs(snippet).map((paragraph, paragraphIndex) => (
                     <p key={`${touchMessageReference.reference_id}-touch-${index}-${paragraphIndex}`}>

@@ -4,6 +4,8 @@ export type ReferenceItem = {
   reference_id: string
   file_path: string
   content?: string[]
+  location_label?: string
+  preview?: string
   entity_terms?: string[]
 }
 
