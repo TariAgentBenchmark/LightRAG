@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
-import { streamQuery } from './api/lightrag'
+import { fetchQueryData, streamQuery } from './api/lightrag'
 import { fetchQuestionPool } from './api/questionPool'
 import { createShare, fetchShare } from './api/share'
 import {
@@ -649,6 +649,16 @@ const sortReferences = (references?: ReferenceItem[]) =>
 
     return left.reference_id.localeCompare(right.reference_id, 'zh-CN')
   })
+
+const referenceTargetKey = (messageId: string, referenceId: string) => `${messageId}:${referenceId}`
+
+const normalizeReferencePath = (path: string) =>
+  path
+    .replace(/\\/g, '/')
+    .split('/')
+    .pop()
+    ?.trim()
+    .toLocaleLowerCase('zh-CN') ?? ''
 
 const buildAnswerExportText = (question: string, message: ChatMessage) => {
   const sections = splitAnswerSections(stripKnownFileExtensions(message.content))
@@ -1567,6 +1577,13 @@ export default function App() {
     messageId: string
     referenceId: string
   } | null>(null)
+  const [referenceContentLoadingTarget, setReferenceContentLoadingTarget] = useState<string | null>(
+    null
+  )
+  const [referenceContentError, setReferenceContentError] = useState<{
+    target: string
+    text: string
+  } | null>(null)
   const [hoverPreview, setHoverPreview] = useState<{
     messageId: string
     referenceId: string
@@ -1741,6 +1758,16 @@ export default function App() {
   const touchMessageReference = touchMessage?.references?.find(
     (reference) => reference.reference_id === touchReference?.referenceId
   ) ?? null
+  const touchReferenceTarget =
+    touchMessage && touchMessageReference
+      ? referenceTargetKey(touchMessage.id, touchMessageReference.reference_id)
+      : ''
+  const isTouchReferenceLoading =
+    touchReferenceTarget.length > 0 && referenceContentLoadingTarget === touchReferenceTarget
+  const touchReferenceLoadError =
+    touchReferenceTarget.length > 0 && referenceContentError?.target === touchReferenceTarget
+      ? referenceContentError.text
+      : ''
   const speechSettings = config.speechSettings ?? {}
   const defaultSpeakerId = speechProvider?.tts_speaker_id ?? ''
   const selectedSpeakerId = speechSettings.speakerId ?? ''
@@ -2772,8 +2799,100 @@ export default function App() {
     }
   }
 
+  const hydrateReferenceContent = async (referenceId: string, messageId: string) => {
+    const target = referenceTargetKey(messageId, referenceId)
+    const session = currentSession
+    const message = session?.messages.find((item) => item.id === messageId)
+    const reference = message?.references?.find((item) => item.reference_id === referenceId)
+
+    if (!session || !message || !reference || reference.content?.some((snippet) => snippet.trim())) {
+      return
+    }
+
+    const relatedQuestion = getMessageQuestion(session.messages, messageId)
+    if (!relatedQuestion) {
+      return
+    }
+
+    setReferenceContentLoadingTarget(target)
+    setReferenceContentError(null)
+
+    try {
+      const messageIndex = session.messages.findIndex((item) => item.id === messageId)
+      const conversationHistory =
+        messageIndex > 0 ? buildConversationHistory(session.messages.slice(0, messageIndex)) : []
+      const response = await fetchQueryData(
+        config.baseUrl,
+        {
+          query: relatedQuestion,
+          mode: config.mode,
+          stream: false,
+          include_references: true,
+          include_chunk_content: true,
+          conversation_history: conversationHistory,
+          use_conversation_history: conversationHistory.length > 0
+        },
+        {
+          apiKey: config.apiKey,
+          bearerToken: config.bearerToken
+        }
+      )
+      const referencePath = normalizeReferencePath(reference.file_path)
+      const matchingChunks = (response.data?.chunks ?? [])
+        .map((chunk, index) => ({ chunk, index }))
+        .filter(({ chunk }) => {
+          const chunkPath = normalizeReferencePath(chunk.file_path ?? '')
+          return (
+            chunk.reference_id === reference.reference_id ||
+            (referencePath.length > 0 && chunkPath === referencePath)
+          )
+        })
+        .sort((left, right) => {
+          const leftOrder =
+            typeof left.chunk.chunk_order_index === 'number'
+              ? left.chunk.chunk_order_index
+              : left.index
+          const rightOrder =
+            typeof right.chunk.chunk_order_index === 'number'
+              ? right.chunk.chunk_order_index
+              : right.index
+          return leftOrder - rightOrder
+        })
+
+      const contents = matchingChunks
+        .map(({ chunk }) => chunk.content?.trim() ?? '')
+        .filter(Boolean)
+
+      if (contents.length === 0) {
+        throw new Error('没有找到这条引用的完整片段。')
+      }
+
+      upsertSession(session.id, (current) => ({
+        ...current,
+        messages: current.messages.map((item) =>
+          item.id === messageId
+            ? {
+                ...item,
+                references: item.references?.map((ref) =>
+                  ref.reference_id === referenceId ? { ...ref, content: contents } : ref
+                )
+              }
+            : item
+        )
+      }))
+    } catch (error) {
+      setReferenceContentError({
+        target,
+        text: error instanceof Error ? error.message : '引用原文加载失败。'
+      })
+    } finally {
+      setReferenceContentLoadingTarget((current) => (current === target ? null : current))
+    }
+  }
+
   const handleSelectReference = (referenceId: string, messageId: string) => {
     setTouchReference({ referenceId, messageId })
+    void hydrateReferenceContent(referenceId, messageId)
   }
 
   const handleCopyAnswer = async (message: ChatMessage, relatedQuestion: string) => {
@@ -3760,6 +3879,12 @@ export default function App() {
               </div>
             )}
             <div className="sheet-content">
+              {isTouchReferenceLoading && (
+                <p className="reference-load-note">正在加载完整引用原文…</p>
+              )}
+              {touchReferenceLoadError && (
+                <p className="reference-load-note error">{touchReferenceLoadError}</p>
+              )}
               {referenceDisplaySnippets(touchMessageReference).map((snippet, index) => (
                 <blockquote key={`${touchMessageReference.reference_id}-touch-${index}`}>
                   {snippetParagraphs(snippet).map((paragraph, paragraphIndex) => (

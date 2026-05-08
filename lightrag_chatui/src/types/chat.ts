@@ -4,6 +4,7 @@ export type ReferenceItem = {
   reference_id: string
   file_path: string
   content?: string[]
+  chunk_order_indices?: number[]
   location_label?: string
   preview?: string
   entity_terms?: string[]
@@ -114,6 +115,22 @@ export type QuestionPoolItem = {
 export type QuestionPoolResponse = {
   status: 'ok'
   questions: QuestionPoolItem[]
+}
+
+export type QueryDataChunk = {
+  reference_id?: string
+  file_path?: string
+  content?: string
+  chunk_order_index?: number | null
+}
+
+export type QueryDataResponse = {
+  status: 'success' | 'failure'
+  message: string
+  data?: {
+    chunks?: QueryDataChunk[]
+    references?: ReferenceItem[]
+  }
 }
 
 export type StreamEvent =

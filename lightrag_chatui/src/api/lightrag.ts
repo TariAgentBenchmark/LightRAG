@@ -1,4 +1,4 @@
-import type { QueryRequest, ReferenceItem, StreamEvent } from '../types/chat'
+import type { QueryDataResponse, QueryRequest, ReferenceItem, StreamEvent } from '../types/chat'
 
 const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '')
 
@@ -113,4 +113,40 @@ export const streamQuery = async (
       error?: string
     }
   )
+}
+
+export const fetchQueryData = async (
+  baseUrl: string,
+  request: QueryRequest,
+  auth: { apiKey?: string; bearerToken?: string }
+) => {
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json'
+  }
+
+  if (auth.apiKey) {
+    headers['X-API-Key'] = auth.apiKey
+  }
+
+  if (auth.bearerToken) {
+    headers.Authorization = `Bearer ${auth.bearerToken}`
+  }
+
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}/query/data`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(request)
+  })
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(body || `HTTP ${response.status}`)
+  }
+
+  const data = (await response.json()) as QueryDataResponse
+  if (data.status !== 'success') {
+    throw new Error(data.message || '引用原文加载失败')
+  }
+
+  return data
 }
