@@ -23,6 +23,7 @@ import type {
   AppConfig,
   ChatMessage,
   ChatSession,
+  QueryDataChunk,
   ReferenceItem,
   SharePayload,
   SpeechProviderConfig,
@@ -593,6 +594,9 @@ const referenceDisplaySnippets = (reference: ReferenceItem) => {
   return ['当前仅显示引用出处，未加载原文片段。']
 }
 
+const hasLoadedReferenceContent = (reference: ReferenceItem) =>
+  reference.content?.some((snippet) => snippet.trim().length > 0) ?? false
+
 const referenceDisplayParagraphs = (reference: ReferenceItem) =>
   referenceDisplaySnippets(reference)
     .reduce<string[]>((items, snippet) => items.concat(snippetParagraphs(snippet)), [])
@@ -659,6 +663,36 @@ const normalizeReferencePath = (path: string) =>
     .pop()
     ?.trim()
     .toLocaleLowerCase('zh-CN') ?? ''
+
+const getReferenceContentsFromChunks = (
+  reference: ReferenceItem,
+  chunks: QueryDataChunk[]
+) => {
+  const referencePath = normalizeReferencePath(reference.file_path)
+
+  return chunks
+    .map((chunk, index) => ({ chunk, index }))
+    .filter(({ chunk }) => {
+      const chunkPath = normalizeReferencePath(chunk.file_path ?? '')
+      return (
+        chunk.reference_id === reference.reference_id ||
+        (referencePath.length > 0 && chunkPath === referencePath)
+      )
+    })
+    .sort((left, right) => {
+      const leftOrder =
+        typeof left.chunk.chunk_order_index === 'number'
+          ? left.chunk.chunk_order_index
+          : left.index
+      const rightOrder =
+        typeof right.chunk.chunk_order_index === 'number'
+          ? right.chunk.chunk_order_index
+          : right.index
+      return leftOrder - rightOrder
+    })
+    .map(({ chunk }) => chunk.content?.trim() ?? '')
+    .filter(Boolean)
+}
 
 const buildAnswerExportText = (question: string, message: ChatMessage) => {
   const sections = splitAnswerSections(stripKnownFileExtensions(message.content))
@@ -2799,13 +2833,72 @@ export default function App() {
     }
   }
 
+  const fetchMessageWithReferenceContent = async (
+    session: ChatSession,
+    message: ChatMessage,
+    relatedQuestion: string
+  ) => {
+    const references = message.references ?? []
+    if (
+      references.length === 0 ||
+      references.every((reference) => hasLoadedReferenceContent(reference))
+    ) {
+      return message
+    }
+
+    const messageIndex = session.messages.findIndex((item) => item.id === message.id)
+    const conversationHistory =
+      messageIndex > 0 ? buildConversationHistory(session.messages.slice(0, messageIndex)) : []
+    const response = await fetchQueryData(
+      config.baseUrl,
+      {
+        query: relatedQuestion,
+        mode: config.mode,
+        stream: false,
+        include_references: true,
+        include_chunk_content: true,
+        conversation_history: conversationHistory,
+        use_conversation_history: conversationHistory.length > 0
+      },
+      {
+        apiKey: config.apiKey,
+        bearerToken: config.bearerToken
+      }
+    )
+    const chunks = response.data?.chunks ?? []
+    const hydratedReferences = references.map((reference) => {
+      if (hasLoadedReferenceContent(reference)) {
+        return reference
+      }
+
+      const contents = getReferenceContentsFromChunks(reference, chunks)
+      return contents.length > 0 ? { ...reference, content: contents } : reference
+    })
+
+    return {
+      ...message,
+      references: hydratedReferences
+    }
+  }
+
+  const updateSessionMessage = (
+    sessionId: string,
+    messageId: string,
+    updater: (message: ChatMessage) => ChatMessage
+  ) => {
+    upsertSession(sessionId, (current) => ({
+      ...current,
+      messages: current.messages.map((item) => (item.id === messageId ? updater(item) : item))
+    }))
+  }
+
   const hydrateReferenceContent = async (referenceId: string, messageId: string) => {
     const target = referenceTargetKey(messageId, referenceId)
     const session = currentSession
     const message = session?.messages.find((item) => item.id === messageId)
     const reference = message?.references?.find((item) => item.reference_id === referenceId)
 
-    if (!session || !message || !reference || reference.content?.some((snippet) => snippet.trim())) {
+    if (!session || !message || !reference || hasLoadedReferenceContent(reference)) {
       return
     }
 
@@ -2818,68 +2911,20 @@ export default function App() {
     setReferenceContentError(null)
 
     try {
-      const messageIndex = session.messages.findIndex((item) => item.id === messageId)
-      const conversationHistory =
-        messageIndex > 0 ? buildConversationHistory(session.messages.slice(0, messageIndex)) : []
-      const response = await fetchQueryData(
-        config.baseUrl,
-        {
-          query: relatedQuestion,
-          mode: config.mode,
-          stream: false,
-          include_references: true,
-          include_chunk_content: true,
-          conversation_history: conversationHistory,
-          use_conversation_history: conversationHistory.length > 0
-        },
-        {
-          apiKey: config.apiKey,
-          bearerToken: config.bearerToken
-        }
+      const hydratedMessage = await fetchMessageWithReferenceContent(
+        session,
+        message,
+        relatedQuestion
       )
-      const referencePath = normalizeReferencePath(reference.file_path)
-      const matchingChunks = (response.data?.chunks ?? [])
-        .map((chunk, index) => ({ chunk, index }))
-        .filter(({ chunk }) => {
-          const chunkPath = normalizeReferencePath(chunk.file_path ?? '')
-          return (
-            chunk.reference_id === reference.reference_id ||
-            (referencePath.length > 0 && chunkPath === referencePath)
-          )
-        })
-        .sort((left, right) => {
-          const leftOrder =
-            typeof left.chunk.chunk_order_index === 'number'
-              ? left.chunk.chunk_order_index
-              : left.index
-          const rightOrder =
-            typeof right.chunk.chunk_order_index === 'number'
-              ? right.chunk.chunk_order_index
-              : right.index
-          return leftOrder - rightOrder
-        })
+      const hydratedReference = hydratedMessage.references?.find(
+        (item) => item.reference_id === referenceId
+      )
 
-      const contents = matchingChunks
-        .map(({ chunk }) => chunk.content?.trim() ?? '')
-        .filter(Boolean)
-
-      if (contents.length === 0) {
+      if (!hydratedReference || !hasLoadedReferenceContent(hydratedReference)) {
         throw new Error('没有找到这条引用的完整片段。')
       }
 
-      upsertSession(session.id, (current) => ({
-        ...current,
-        messages: current.messages.map((item) =>
-          item.id === messageId
-            ? {
-                ...item,
-                references: item.references?.map((ref) =>
-                  ref.reference_id === referenceId ? { ...ref, content: contents } : ref
-                )
-              }
-            : item
-        )
-      }))
+      updateSessionMessage(session.id, messageId, () => hydratedMessage)
     } catch (error) {
       setReferenceContentError({
         target,
@@ -3041,14 +3086,56 @@ export default function App() {
   }
 
   const handleDownloadPdf = async (message: ChatMessage, relatedQuestion: string) => {
+    const exportWindow = window.open('', '_blank')
+    if (exportWindow) {
+      exportWindow.document.title = '正在准备导出'
+      exportWindow.document.body.innerHTML =
+        '<p style="font:16px -apple-system,BlinkMacSystemFont,sans-serif;padding:24px;color:#1f332e;">正在加载引用原文，请稍候…</p>'
+    }
+
+    let exportMessage =
+      currentSession?.messages.find((item) => item.id === message.id) ?? message
+    const references = exportMessage.references ?? []
+    const needsReferenceContent =
+      references.length > 0 &&
+      references.some((reference) => !hasLoadedReferenceContent(reference))
+
+    if (needsReferenceContent && currentSession && relatedQuestion.trim()) {
+      showUiStatus('正在加载引用原文，用于导出 PDF。')
+
+      try {
+        exportMessage = await fetchMessageWithReferenceContent(
+          currentSession,
+          exportMessage,
+          relatedQuestion
+        )
+
+        const stillMissingReferenceContent = (exportMessage.references ?? []).some(
+          (reference) => !hasLoadedReferenceContent(reference)
+        )
+        if (stillMissingReferenceContent) {
+          throw new Error('部分引用原文未能加载。')
+        }
+
+        updateSessionMessage(currentSession.id, exportMessage.id, () => exportMessage)
+      } catch (error) {
+        exportWindow?.close()
+        showUiStatus(
+          error instanceof Error ? `引用原文加载失败：${error.message}` : '引用原文加载失败，暂未生成 PDF。',
+          'error'
+        )
+        return
+      }
+    }
+
     const filename = `玄德问答-${Date.now()}.html`
     const { renderToStaticMarkup } = await import('react-dom/server')
-    const printableHtml = buildPrintableHtml(renderToStaticMarkup, relatedQuestion, message)
+    const printableHtml = buildPrintableHtml(renderToStaticMarkup, relatedQuestion, exportMessage)
     const htmlBlob = new Blob([printableHtml], { type: 'text/html;charset=utf-8' })
     const htmlUrl = URL.createObjectURL(htmlBlob)
-    const exportWindow = window.open(htmlUrl, '_blank')
 
-    if (exportWindow) {
+    if (exportWindow && !exportWindow.closed) {
+      exportWindow.location.href = htmlUrl
       if (!isMobileBrowser()) {
         window.setTimeout(() => {
           exportWindow.focus()
@@ -3072,7 +3159,7 @@ export default function App() {
         unit: 'pt',
         format: 'a4'
       })
-      const lines = pdf.splitTextToSize(buildAnswerExportText(relatedQuestion, message), 520)
+      const lines = pdf.splitTextToSize(buildAnswerExportText(relatedQuestion, exportMessage), 520)
       let cursorY = 56
 
       pdf.setFont('helvetica', 'normal')
