@@ -87,7 +87,7 @@ const STARTER_PROMPT_DECKS: StarterPromptDeck[] = [
 ]
 
 const STARTER_PROMPT_COUNT = 6
-const QUESTION_POOL_FETCH_LIMIT = 24
+const QUESTION_POOL_FETCH_LIMIT = 50
 const TTS_PREVIEW_TEXT = '道在日用之间，贵在清静自然。'
 const SPEECH_SEGMENT_MAX_CHARS = 180
 const MOBILE_SPEECH_FIRST_SEGMENT_MAX_CHARS = 90
@@ -376,15 +376,48 @@ const STARTER_CONTEXT_DEPENDENT_RE =
 const STARTER_SEMANTIC_FILLER_RE =
   /什么是|是什么|什么叫|如何理解|怎么理解|怎样理解|为什么|为何|有何|有什么|能否|是否|是不是|哪些|哪种|请问|请|的含义|的意义|含义|意义|关系|区别|体现|应该|可以|在修行中|在修炼中|修行中|修炼中|修持中|对修行|对修炼|意味着什么|指什么|怎么体现|如何体现|[的了呢啊吗么]|[？?]/g
 const STARTER_SIMILARITY_THRESHOLD = 0.72
+const STARTER_QUOTE_PAIRS: Record<string, string> = {
+  '"': '"',
+  "'": "'",
+  '`': '`',
+  '“': '”',
+  '‘': '’',
+  '”': '”',
+  '’': '’'
+}
+
+const stripBalancedOuterQuotes = (text: string) => {
+  let normalized = text.trim()
+
+  while (normalized.length >= 2) {
+    const first = normalized[0]
+    const last = normalized[normalized.length - 1]
+    if (STARTER_QUOTE_PAIRS[first] !== last) {
+      break
+    }
+
+    normalized = normalized.slice(1, -1).trim()
+  }
+
+  return normalized
+}
+
+const repairLeadingClosingQuote = (text: string) =>
+  text
+    .replace(/^([^“”\s]+)”/, '“$1”')
+    .replace(/^([^‘’\s]+)’/, '‘$1’')
 
 const normalizeStarterQuestion = (text: string) =>
-  text
-    .replace(/\[(\^?\d+(?:\s*,\s*\d+)*)\]/g, '')
-    .replace(/^[-*+]\s+/, '')
-    .replace(/^\d+[.)、．]\s*/, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, '')
+  stripBalancedOuterQuotes(
+    repairLeadingClosingQuote(
+      text
+        .replace(/\[(\^?\d+(?:\s*,\s*\d+)*)\]/g, '')
+        .replace(/^[-*+]\s+/, '')
+        .replace(/^\d+[.)、．]\s*/, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    )
+  )
 
 const isStarterQuestionCandidate = (question: string) =>
   question.length >= 4 &&
@@ -486,12 +519,21 @@ const pickQuestionPoolPromptDeck = (
   serverQuestions: string[],
   sessions: ChatSession[]
 ): StarterPromptDeck => {
-  const dynamicQuestions: string[] = []
+  const serverPool: string[] = []
   const seen = new Set<string>()
 
   for (const question of serverQuestions) {
-    addStarterQuestion(dynamicQuestions, seen, question)
+    addStarterQuestion(serverPool, seen, question)
   }
+
+  if (serverPool.length >= STARTER_PROMPT_COUNT) {
+    return {
+      label: '推荐问题',
+      prompts: shuffle(serverPool).slice(0, STARTER_PROMPT_COUNT)
+    }
+  }
+
+  const dynamicQuestions = [...serverPool]
   for (const question of collectSessionStarterQuestions(sessions)) {
     addStarterQuestion(dynamicQuestions, seen, question)
   }

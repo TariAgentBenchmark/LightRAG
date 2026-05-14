@@ -99,6 +99,17 @@ _QUESTION_SEMANTIC_FILLER_RE = re.compile(
     r"[的了呢啊吗么]|[？?]"
     r")"
 )
+_QUOTE_PAIRS = {
+    '"': '"',
+    "'": "'",
+    "`": "`",
+    "“": "”",
+    "‘": "’",
+    "”": "”",
+    "’": "’",
+}
+_LEADING_CLOSING_DOUBLE_QUOTE_RE = re.compile(r'^([^“”\s]+)”')
+_LEADING_CLOSING_SINGLE_QUOTE_RE = re.compile(r"^([^‘’\s]+)’")
 
 
 @dataclass(frozen=True)
@@ -145,6 +156,22 @@ def _semantic_key(text: str) -> str:
     return semantic_key or key
 
 
+def _strip_balanced_outer_quotes(text: str) -> str:
+    normalized = text.strip()
+    while len(normalized) >= 2:
+        first = normalized[0]
+        last = normalized[-1]
+        if _QUOTE_PAIRS.get(first) != last:
+            break
+        normalized = normalized[1:-1].strip()
+    return normalized
+
+
+def _repair_unbalanced_leading_quote(text: str) -> str:
+    text = _LEADING_CLOSING_DOUBLE_QUOTE_RE.sub(r"“\1”", text)
+    return _LEADING_CLOSING_SINGLE_QUOTE_RE.sub(r"‘\1’", text)
+
+
 def _bigrams(text: str) -> set[str]:
     if len(text) < 2:
         return {text} if text else set()
@@ -183,9 +210,8 @@ def _clean_question(raw: str) -> str:
     text = _MARKDOWN_LINK_RE.sub(r"\1", text)
     text = _INLINE_CITATION_RE.sub("", text)
     text = _BULLET_RE.sub("", text)
-    text = text.strip().strip("\"'“”‘’`")
     text = _WHITESPACE_RE.sub(" ", text).strip()
-    return text
+    return _strip_balanced_outer_quotes(_repair_unbalanced_leading_quote(text))
 
 
 def _passes_rule_prefilter(question: str) -> bool:
@@ -432,7 +458,7 @@ class QuestionPoolService:
             return [
                 {
                     "id": str(item.get("id", "")),
-                    "question": item["question"],
+                    "question": _repair_unbalanced_leading_quote(item["question"]),
                     "category": str(item.get("category", "推荐问题")),
                 }
                 for item in selected_items
