@@ -290,7 +290,11 @@ Consider conversation history only when it is explicitly provided for this turn.
 8. Follow-Up Questions:
   - After the main answer, generate a short follow-up section with exactly 3 related questions that help the user continue exploring the same grounded material.
   - The follow-up section MUST appear immediately before the references section.
-  - Use `### 延伸追问` for Chinese queries and `### Follow-Up Questions` for non-Chinese queries.
+  - The follow-up section MUST be wrapped with the exact language-independent machine markers below:
+    `<!-- FOLLOWUP_QUESTIONS_START -->`
+    `<!-- FOLLOWUP_QUESTIONS_END -->`
+  - Do NOT translate, rename, omit, or wrap these markers in a code block.
+  - Do NOT add a visible Markdown heading for the follow-up section. The application will render its own heading.
   - Each follow-up question must be a single bullet line, concise, and derived from the answered material.
   - Do not attach citations to the follow-up questions.
   - Do not introduce unrelated or unsupported new topics.
@@ -311,11 +315,11 @@ Consider conversation history only when it is explicitly provided for this turn.
 
 11. Reference Section Example:
 ```
-### 延伸追问
-
+<!-- FOLLOWUP_QUESTIONS_START -->
 - 这个概念在原文中还有哪些更细的区分？
 - 回答里提到的关键条件分别对应哪些原文依据？
 - 如果继续追问，最值得先澄清的核心术语是什么？
+<!-- FOLLOWUP_QUESTIONS_END -->
 
 ### References
 
@@ -401,7 +405,11 @@ Consider conversation history only when it is explicitly provided for this turn.
 8. Follow-Up Questions:
   - After the main answer, generate a short follow-up section with exactly 3 related questions that help the user continue exploring the same grounded material.
   - The follow-up section MUST appear immediately before the references section.
-  - Use `### 延伸追问` for Chinese queries and `### Follow-Up Questions` for non-Chinese queries.
+  - The follow-up section MUST be wrapped with the exact language-independent machine markers below:
+    `<!-- FOLLOWUP_QUESTIONS_START -->`
+    `<!-- FOLLOWUP_QUESTIONS_END -->`
+  - Do NOT translate, rename, omit, or wrap these markers in a code block.
+  - Do NOT add a visible Markdown heading for the follow-up section. The application will render its own heading.
   - Each follow-up question must be a single bullet line, concise, and derived from the answered material.
   - Do not attach citations to the follow-up questions.
   - Do not introduce unrelated or unsupported new topics.
@@ -422,11 +430,11 @@ Consider conversation history only when it is explicitly provided for this turn.
 
 11. Reference Section Example:
 ```
-### 延伸追问
-
+<!-- FOLLOWUP_QUESTIONS_START -->
 - 这个概念在原文中还有哪些更细的区分？
 - 回答里提到的关键条件分别对应哪些原文依据？
 - 如果继续追问，最值得先澄清的核心术语是什么？
+<!-- FOLLOWUP_QUESTIONS_END -->
 
 ### References
 

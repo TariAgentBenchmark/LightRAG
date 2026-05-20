@@ -316,19 +316,45 @@ const ANSWER_DISCLAIMER =
 type AnswerSectionKey = 'body' | 'references' | 'followups'
 type StaticMarkupRenderer = typeof import('react-dom/server').renderToStaticMarkup
 
+const FOLLOWUP_START_MARKER_RE = /^<!--\s*FOLLOWUP_QUESTIONS_START\s*-->$/i
+const FOLLOWUP_END_MARKER_RE = /^<!--\s*FOLLOWUP_QUESTIONS_END\s*-->$/i
+
+const normalizeAnswerSectionHeading = (heading: string) =>
+  heading
+    .trim()
+    .replace(/[‐‑‒–—−]/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/[：:]+$/g, '')
+    .toLocaleLowerCase('zh-CN')
+
+const REFERENCE_SECTION_HEADINGS = new Set(['references', 'reference', '参考资料'])
+const FOLLOWUP_SECTION_HEADINGS = new Set([
+  '延伸追问',
+  '延伸问题',
+  '追问',
+  'follow-up questions',
+  'follow up questions',
+  'followup questions',
+  'follow-up question',
+  'follow up question',
+  'followup question',
+  'follow-up',
+  'follow up'
+])
+
 const matchAnswerSectionHeading = (line: string): AnswerSectionKey | null => {
   const match = line.match(/^#{1,6}\s*(.+?)\s*$/)
   if (!match) {
     return null
   }
 
-  const heading = match[1].trim().toLocaleLowerCase('zh-CN')
+  const heading = normalizeAnswerSectionHeading(match[1])
 
-  if (heading === 'references' || heading === '参考资料') {
+  if (REFERENCE_SECTION_HEADINGS.has(heading)) {
     return 'references'
   }
 
-  if (heading === '延伸追问') {
+  if (FOLLOWUP_SECTION_HEADINGS.has(heading)) {
     return 'followups'
   }
 
@@ -353,6 +379,16 @@ const splitAnswerSections = (content: string) => {
   let currentSection: AnswerSectionKey = 'body'
 
   for (const line of content.replace(/\r\n?/g, '\n').split('\n')) {
+    if (FOLLOWUP_START_MARKER_RE.test(line.trim())) {
+      currentSection = 'followups'
+      continue
+    }
+
+    if (FOLLOWUP_END_MARKER_RE.test(line.trim())) {
+      currentSection = 'body'
+      continue
+    }
+
     const matchedSection = matchAnswerSectionHeading(line)
     if (matchedSection) {
       currentSection = matchedSection
