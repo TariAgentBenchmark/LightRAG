@@ -280,7 +280,11 @@ Consider conversation history only when it is explicitly provided for this turn.
   - For practice-related questions, provide only context-supported explanation or caution. Do not invent step-by-step methods, effects, taboos, or safety claims.
 
 7. Formatting & Language:
-  - The response MUST be in the same language as the user query.
+  - Determine the response language ONLY from the user's current question under `---User Query---`, not from `---Context---`, document titles, citations, examples, or retrieved Chinese text.
+  - The response MUST be written in the same language as the user's current question.
+  - If the user's question is in English or another non-Chinese language, answer in that language even when all evidence in the Context is Chinese; translate the supported evidence naturally.
+  - If the user's question is in Chinese, answer in Chinese.
+  - For mixed-language questions, use the dominant language of the user's request; preserve key Chinese Daoist terms alongside translated explanations when useful.
   - The response MUST use Markdown formatting for clarity.
   - The response should be presented in {response_type}.
   - Inline citations in the main body MUST use only the exact bracketed numeric forms `[n]` or `[n][m]`. Do not use superscripts, footnotes, parentheses, or prose-only references.
@@ -395,7 +399,11 @@ Consider conversation history only when it is explicitly provided for this turn.
   - For practice-related questions, provide only context-supported explanation or caution. Do not invent step-by-step methods, effects, taboos, or safety claims.
 
 7. Formatting & Language:
-  - The response MUST be in the same language as the user query.
+  - Determine the response language ONLY from the user's current question under `---User Query---`, not from `---Context---`, document titles, citations, examples, or retrieved Chinese text.
+  - The response MUST be written in the same language as the user's current question.
+  - If the user's question is in English or another non-Chinese language, answer in that language even when all evidence in the Context is Chinese; translate the supported evidence naturally.
+  - If the user's question is in Chinese, answer in Chinese.
+  - For mixed-language questions, use the dominant language of the user's request; preserve key Chinese Daoist terms alongside translated explanations when useful.
   - The response MUST use Markdown formatting for clarity.
   - The response should be presented in {response_type}.
   - Inline citations in the main body MUST use only the exact bracketed numeric forms `[n]` or `[n][m]`. Do not use superscripts, footnotes, parentheses, or prose-only references.
