@@ -2,6 +2,65 @@ import type { QueryDataResponse, QueryRequest, ReferenceItem, StreamEvent } from
 
 const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '')
 
+const formatHttpErrorMessage = (body: string, status: number) => {
+  const trimmed = body.trim()
+  if (!trimmed) {
+    return `HTTP ${status}`
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      detail?: unknown
+      message?: unknown
+      error?: unknown
+    }
+    const { detail } = parsed
+
+    if (Array.isArray(detail)) {
+      const queryLengthError = detail.some((item) => {
+        if (!item || typeof item !== 'object') {
+          return false
+        }
+        const record = item as { loc?: unknown; type?: unknown }
+        return (
+          Array.isArray(record.loc) &&
+          record.loc.includes('query') &&
+          record.type === 'string_too_short'
+        )
+      })
+
+      if (queryLengthError) {
+        return '请输入有效问题后再发送'
+      }
+
+      const messages = detail
+        .map((item) =>
+          item && typeof item === 'object' && 'msg' in item
+            ? String((item as { msg?: unknown }).msg ?? '')
+            : ''
+        )
+        .filter(Boolean)
+      if (messages.length > 0) {
+        return messages.join('；')
+      }
+    }
+
+    if (typeof detail === 'string' && detail) {
+      return detail
+    }
+    if (typeof parsed.message === 'string' && parsed.message) {
+      return parsed.message
+    }
+    if (typeof parsed.error === 'string' && parsed.error) {
+      return parsed.error
+    }
+  } catch {
+    // Fall through and show the original response body.
+  }
+
+  return trimmed
+}
+
 export const streamQuery = async (
   baseUrl: string,
   request: QueryRequest,
@@ -31,7 +90,7 @@ export const streamQuery = async (
 
   if (!response.ok) {
     const body = await response.text()
-    throw new Error(body || `HTTP ${response.status}`)
+    throw new Error(formatHttpErrorMessage(body, response.status))
   }
 
   if (!response.body) {
@@ -140,7 +199,7 @@ export const fetchQueryData = async (
 
   if (!response.ok) {
     const body = await response.text()
-    throw new Error(body || `HTTP ${response.status}`)
+    throw new Error(formatHttpErrorMessage(body, response.status))
   }
 
   const data = (await response.json()) as QueryDataResponse

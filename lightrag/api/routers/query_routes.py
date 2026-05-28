@@ -375,7 +375,7 @@ def finalize_response_references(
 
 class QueryRequest(BaseModel):
     query: str = Field(
-        min_length=3,
+        min_length=1,
         description="The query text",
     )
 
@@ -486,10 +486,10 @@ class QueryRequest(BaseModel):
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
     )
 
-    @field_validator("query", mode="after")
+    @field_validator("query", mode="before")
     @classmethod
-    def query_strip_after(cls, query: str) -> str:
-        return query.strip()
+    def query_strip_before(cls, query: Any) -> Any:
+        return query.strip() if isinstance(query, str) else query
 
     @field_validator("conversation_history", mode="after")
     @classmethod
