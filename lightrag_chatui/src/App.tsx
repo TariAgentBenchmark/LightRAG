@@ -2780,18 +2780,19 @@ export default function App() {
     let socket: WebSocket | null = null
 
     try {
-      socket = createSpeechAsrSocket(config.baseUrl, {
+      const activeSocket = createSpeechAsrSocket(config.baseUrl, {
         apiKey: config.apiKey,
         bearerToken: config.bearerToken
       })
-      socket.binaryType = 'arraybuffer'
+      socket = activeSocket
+      activeSocket.binaryType = 'arraybuffer'
 
       await new Promise<void>((resolve, reject) => {
-        socket.onopen = () => resolve()
-        socket.onerror = () => reject(new Error('语音识别连接失败。'))
+        activeSocket.onopen = () => resolve()
+        activeSocket.onerror = () => reject(new Error('语音识别连接失败。'))
       })
 
-      socket.onmessage = (event) => {
+      activeSocket.onmessage = (event) => {
         if (typeof event.data !== 'string') {
           return
         }
@@ -2815,22 +2816,22 @@ export default function App() {
         }
       }
 
-      socket.onerror = () => {
+      activeSocket.onerror = () => {
         setSpeechError('语音识别连接失败。')
       }
 
-      socket.onclose = () => {
+      activeSocket.onclose = () => {
         setIsRecording(false)
       }
 
       const recorder = await startPCMRecorder((chunk) => {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(chunk)
+        if (activeSocket.readyState === WebSocket.OPEN) {
+          activeSocket.send(chunk)
         }
       })
 
       recorderStopRef.current = recorder.stop
-      asrSocketRef.current = socket
+      asrSocketRef.current = activeSocket
       setIsRecording(true)
     } catch (error) {
       setSpeechError(error instanceof Error ? error.message : '无法启动语音输入。')
@@ -4050,7 +4051,7 @@ export default function App() {
         </div>
       )}
 
-      {hoverPreview && hoverReference && (
+      {hoverPreview && hoverMessage && hoverReference && (
         <div
           className="floating-reference-preview"
           style={{
@@ -4117,7 +4118,7 @@ export default function App() {
         </div>
       )}
 
-      {touchReference && touchMessageReference && (
+      {touchReference && touchMessage && touchMessageReference && (
         <div className="mobile-reference-sheet" onClick={() => setTouchReference(null)}>
           <div className="sheet-body" onClick={(event) => event.stopPropagation()}>
             <div className="sheet-handle" />
