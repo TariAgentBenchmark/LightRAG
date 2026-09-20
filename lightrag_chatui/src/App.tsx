@@ -90,7 +90,8 @@ const STARTER_PROMPT_COUNT = 6
 const QUESTION_POOL_FETCH_LIMIT = 50
 const TTS_PREVIEW_TEXT = '道在日用之间，贵在清静自然。'
 const SPEECH_SEGMENT_MAX_CHARS = 180
-const MOBILE_SPEECH_FIRST_SEGMENT_MAX_CHARS = 90
+// 并发预取的语音段数上限（火山 TTS 有并发配额，避免一次打满）
+const SPEECH_PREFETCH_CONCURRENCY = 3
 
 const VOICE_FILTERS = [
   { key: 'recommended', label: '推荐' },
@@ -231,24 +232,6 @@ const splitSentences = (text: string) => {
   }
 
   return sentences
-}
-
-const isConstrainedMobileAudioBrowser = () => {
-  if (typeof navigator === 'undefined') {
-    return false
-  }
-
-  const userAgent = navigator.userAgent
-  const isIOS =
-    /iP(?:hone|ad|od)/i.test(userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-  const isMobileSafari =
-    /Safari/i.test(userAgent) &&
-    /Mobile/i.test(userAgent) &&
-    !/(CriOS|FxiOS|EdgiOS|OPiOS)/i.test(userAgent)
-  const isWeChat = /MicroMessenger/i.test(userAgent)
-
-  return isIOS || isMobileSafari || isWeChat
 }
 
 const mergeSpeechBlobs = (blobs: Blob[]) => {
@@ -1708,6 +1691,9 @@ export default function App() {
   const audioUrlRef = useRef<string | null>(null)
   const audioTargetRef = useRef<string | null>(null)
   const speechRunIdRef = useRef(0)
+  const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null)
+  const wakeLockPendingRef = useRef(false)
+  const speechWakeLockWantedRef = useRef(false)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const audioUploadInputRef = useRef<HTMLInputElement | null>(null)
@@ -2162,10 +2148,64 @@ export default function App() {
     setMobileDrawerOpen(false)
   }
 
+  // —— 屏幕常亮（Wake Lock）：iOS Safari 16.4+ 支持；微信内不支持但不影响，主要靠“无缝连播”避免静默期锁屏
+  const requestSpeechWakeLock = () => {
+    speechWakeLockWantedRef.current = true
+    const wakeLock = (navigator as unknown as { wakeLock?: { request: (type: string) => Promise<{ release: () => Promise<void> }> } }).wakeLock
+    if (!wakeLock || wakeLockRef.current || wakeLockPendingRef.current) {
+      return
+    }
+    wakeLockPendingRef.current = true
+    wakeLock
+      .request('screen')
+      .then((sentinel) => {
+        if (speechWakeLockWantedRef.current && !wakeLockRef.current) {
+          wakeLockRef.current = sentinel
+        } else {
+          void sentinel.release()
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        wakeLockPendingRef.current = false
+      })
+  }
+
+  const releaseSpeechWakeLock = () => {
+    speechWakeLockWantedRef.current = false
+    const sentinel = wakeLockRef.current
+    wakeLockRef.current = null
+    if (sentinel) {
+      sentinel.release().catch(() => undefined)
+    }
+  }
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return
+    }
+
+    const handleVisibilityChange = () => {
+      // 页面重新可见时，若朗读会话仍在进行则重新申请屏幕常亮（锁屏时浏览器会自动释放）
+      if (document.visibilityState === 'visible' && speechWakeLockWantedRef.current) {
+        requestSpeechWakeLock()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      releaseSpeechWakeLock()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const stopSpeaking = (cancelPlayback = true) => {
     if (cancelPlayback) {
       speechRunIdRef.current += 1
     }
+
+    releaseSpeechWakeLock()
 
     if (audioRef.current) {
       audioRef.current.pause()
@@ -2178,6 +2218,8 @@ export default function App() {
   const pauseSpeaking = () => {
     speechRunIdRef.current += 1
 
+    releaseSpeechWakeLock()
+
     if (audioRef.current) {
       audioRef.current.pause()
     }
@@ -2188,6 +2230,8 @@ export default function App() {
 
   const clearSpeechAudio = () => {
     speechRunIdRef.current += 1
+
+    releaseSpeechWakeLock()
 
     releaseCurrentAudio()
 
@@ -2216,7 +2260,8 @@ export default function App() {
   const attachSpeechAudioHandlers = (
     audio: HTMLAudioElement,
     target: string,
-    onEnded?: () => void
+    onEnded?: () => void,
+    sessionRunId?: number
   ) => {
     audio.onended = onEnded ?? (() => {
       stopSpeaking(false)
@@ -2226,13 +2271,26 @@ export default function App() {
       setSpeechError('语音播放失败。')
       clearSpeechAudio()
     }
+    // iOS/微信：锁屏、来电、其他应用抢占音频等会导致“非主动”的 pause。
+    // 此时标记为待播放，让按钮变成「点击播放」，用户点一下即可从断点继续，而不是彻底卡死。
+    audio.onpause = () => {
+      if (sessionRunId === undefined || sessionRunId !== speechRunIdRef.current) {
+        return
+      }
+      if (audio.ended || audio.seeking) {
+        return
+      }
+      setPlayingAudioTarget(null)
+      setPendingPlaybackTarget(target)
+    }
   }
 
   const prepareSpeechAudio = (
     target: string,
     blob: Blob,
     onEnded?: () => void,
-    reuseCurrent = false
+    reuseCurrent = false,
+    sessionRunId?: number
   ) => {
     const shouldReuse =
       reuseCurrent && audioRef.current && audioTargetRef.current === target
@@ -2258,15 +2316,23 @@ export default function App() {
     audioRef.current = audio
     audioUrlRef.current = audioUrl
     audioTargetRef.current = target
-    attachSpeechAudioHandlers(audio, target, onEnded)
+    attachSpeechAudioHandlers(audio, target, onEnded, sessionRunId)
     return audio
   }
 
-  const createSpeechAudio = (target: string, blob: Blob, onEnded?: () => void) =>
-    prepareSpeechAudio(target, blob, onEnded)
+  const createSpeechAudio = (
+    target: string,
+    blob: Blob,
+    onEnded?: () => void,
+    sessionRunId?: number
+  ) => prepareSpeechAudio(target, blob, onEnded, false, sessionRunId)
 
-  const replaceSpeechAudio = (target: string, blob: Blob, onEnded?: () => void) =>
-    prepareSpeechAudio(target, blob, onEnded, true)
+  const replaceSpeechAudio = (
+    target: string,
+    blob: Blob,
+    onEnded?: () => void,
+    sessionRunId?: number
+  ) => prepareSpeechAudio(target, blob, onEnded, true, sessionRunId)
 
   const tryPlaySpeechAudio = async (target: string, blockedMessage: string) => {
     const audio = audioRef.current
@@ -2274,8 +2340,17 @@ export default function App() {
       return false
     }
 
+    requestSpeechWakeLock()
+
     try {
-      audio.currentTime = 0
+      try {
+        // 仅在已经播到末尾时才回到开头；若是被锁屏/来电等中断的，从断点处继续播
+        if (audio.ended || (audio.duration > 0 && audio.currentTime >= audio.duration)) {
+          audio.currentTime = 0
+        }
+      } catch {
+        // iOS 在元数据加载前设置 currentTime 可能报错，忽略即可
+      }
       await audio.play()
       setPlayingAudioTarget(target)
       setPendingPlaybackTarget(null)
@@ -2300,12 +2375,10 @@ export default function App() {
       config.speechSettings
     )
 
-  const shouldUseMobileProgressivePlayback = () => {
+  // mp3/mpeg 的多段音频可以直接字节拼接，才能用“同一 audio 元素换 src 无缝续播”的方案
+  const canUseMergedSpeechPlayback = () => {
     const configuredFormat = speechProvider?.tts_audio_format?.toLocaleLowerCase()
-    const canConcatenateAudio =
-      !configuredFormat || configuredFormat === 'mp3' || configuredFormat === 'mpeg'
-
-    return canConcatenateAudio && isConstrainedMobileAudioBrowser()
+    return !configuredFormat || configuredFormat === 'mp3' || configuredFormat === 'mpeg'
   }
 
   const playVoicePreview = async (speakerId?: string) => {
@@ -2324,6 +2397,7 @@ export default function App() {
     clearSpeechAudio()
     setSpeechError('')
     setPreviewLoadingSpeaker(speakerId ?? 'default')
+    requestSpeechWakeLock()
 
     try {
       const blob = await synthesizeSpeech(
@@ -2399,70 +2473,131 @@ export default function App() {
     }
   }
 
-  const playSpeechSegmentsWithMobilePrefetch = async (target: string, segments: string[]) => {
-    const runId = speechRunIdRef.current
-    const [firstSegment, ...remainingSegments] = segments
-    if (!firstSegment) {
-      return
+  // —— 并发受限的语音段预取：每段一个 promise，带 settled 标记，边界时可以判断“哪些已经好了”
+  const startSpeechSegmentPrefetch = (segments: string[]) => {
+    const tracked: { promise: Promise<Blob>; settled: boolean }[] = segments.map(() => ({
+      // 占位：永不 resolve，启动后会被真实 promise 覆盖
+      promise: new Promise<Blob>(() => {}),
+      settled: false
+    }))
+
+    let launchIndex = 0
+    let activeCount = 0
+
+    const launchNext = () => {
+      while (activeCount < SPEECH_PREFETCH_CONCURRENCY && launchIndex < segments.length) {
+        const index = launchIndex
+        launchIndex += 1
+        activeCount += 1
+
+        const promise = fetchSpeechSegment(segments[index]).finally(() => {
+          activeCount -= 1
+          launchNext()
+        })
+        tracked[index].promise = promise
+        promise.then(
+          () => {
+            tracked[index].settled = true
+          },
+          () => {
+            tracked[index].settled = true
+          }
+        )
+        promise.catch(() => undefined)
+      }
     }
 
-    const remainingBlobPromise =
-      remainingSegments.length > 0
-        ? (async () => {
-            const blobs: Blob[] = []
+    launchNext()
+    return tracked
+  }
 
-            for (const segment of remainingSegments) {
-              if (speechRunIdRef.current !== runId) {
-                return null
-              }
+  // 收集从 cursor 开始、已就绪的段落（若一个都没好则等待紧接着的下一段），合并成一个 blob 继续播
+  const collectReadySpeechBlobs = async (
+    tracked: { promise: Promise<Blob>; settled: boolean }[],
+    cursor: number
+  ): Promise<{ blob: Blob; nextCursor: number } | null> => {
+    const blobs: Blob[] = []
+    let index = cursor
 
-              blobs.push(await fetchSpeechSegment(segment))
-            }
+    while (index < tracked.length && tracked[index].settled) {
+      blobs.push(await tracked[index].promise)
+      index += 1
+    }
 
-            if (blobs.length === 0 || speechRunIdRef.current !== runId) {
-              return null
-            }
+    if (blobs.length === 0) {
+      if (index >= tracked.length) {
+        return null
+      }
+      blobs.push(await tracked[index].promise)
+      index += 1
+      while (index < tracked.length && tracked[index].settled) {
+        blobs.push(await tracked[index].promise)
+        index += 1
+      }
+    }
 
-            return mergeSpeechBlobs(blobs)
-          })()
-        : null
-    remainingBlobPromise?.catch(() => undefined)
+    return { blob: mergeSpeechBlobs(blobs), nextCursor: index }
+  }
 
-    const firstBlob = await fetchSpeechSegment(firstSegment)
+  // 无缝续播：先播第一段，同时并行预取其余段落；每段播完就把“已经合成好的段落”拼起来，
+  // 在同一个 audio 元素上换 src 继续播（iOS 上复用已解锁的元素，避免被自动播放策略拦住）。
+  // 关键点：边界处数据几乎总是已就绪，不再有长静默期，从而不会触发 iOS 锁屏挂起 WebView。
+  const playSpeechSegmentsMerged = async (target: string, segments: string[]) => {
+    const runId = speechRunIdRef.current
+    const tracked = startSpeechSegmentPrefetch(segments)
+
+    const firstBlob = await tracked[0].promise
     if (speechRunIdRef.current !== runId) {
       return
     }
 
-    const playRemaining = async () => {
-      if (!remainingBlobPromise || speechRunIdRef.current !== runId) {
-        clearSpeechAudio()
+    let cursor = 1
+
+    const playNextMergedChunk = async () => {
+      if (speechRunIdRef.current !== runId) {
         return
       }
 
-      setPlayingAudioTarget(null)
-      setSpeechLoadingTarget(target)
-
       try {
-        const remainingBlob = await remainingBlobPromise
-        if (!remainingBlob || speechRunIdRef.current !== runId) {
+        const collected = await collectReadySpeechBlobs(tracked, cursor)
+        if (!collected || speechRunIdRef.current !== runId) {
           return
         }
+        cursor = collected.nextCursor
 
-        replaceSpeechAudio(target, remainingBlob, () => {
-          clearSpeechAudio()
-        })
-        await tryPlaySpeechAudio(target, '后续语音已准备好，请再点一次播放。')
+        const isFinalChunk = cursor >= tracked.length
+        replaceSpeechAudio(
+          target,
+          collected.blob,
+          () => {
+            if (isFinalChunk) {
+              clearSpeechAudio()
+              return
+            }
+            void playNextMergedChunk()
+          },
+          runId
+        )
+        await tryPlaySpeechAudio(target, '语音播放被浏览器拦截，请再点一次播放。')
       } catch (error) {
         setSpeechError(error instanceof Error ? error.message : '后续语音合成失败。')
         clearSpeechAudio()
-      } finally {
-        setSpeechLoadingTarget((current) => (current === target ? null : current))
       }
     }
 
-    createSpeechAudio(target, firstBlob, () => {
-      void playRemaining()
-    })
+    const isFirstSegmentFinal = segments.length === 1
+    createSpeechAudio(
+      target,
+      firstBlob,
+      () => {
+        if (isFirstSegmentFinal) {
+          clearSpeechAudio()
+          return
+        }
+        void playNextMergedChunk()
+      },
+      runId
+    )
     await tryPlaySpeechAudio(target, '语音已生成，请再点一次播放。')
   }
 
@@ -2484,21 +2619,17 @@ export default function App() {
     clearSpeechAudio()
     setSpeechError('')
     setSpeechLoadingTarget(target)
+    requestSpeechWakeLock()
 
     try {
-      const speechSegments = splitSpeechSegments(
-        text,
-        shouldUseMobileProgressivePlayback()
-          ? MOBILE_SPEECH_FIRST_SEGMENT_MAX_CHARS
-          : SPEECH_SEGMENT_MAX_CHARS
-      )
+      const speechSegments = splitSpeechSegments(text, SPEECH_SEGMENT_MAX_CHARS)
       if (speechSegments.length === 0) {
         throw new Error(emptyMessage)
       }
 
       speechRunIdRef.current += 1
-      if (shouldUseMobileProgressivePlayback()) {
-        await playSpeechSegmentsWithMobilePrefetch(target, speechSegments)
+      if (canUseMergedSpeechPlayback()) {
+        await playSpeechSegmentsMerged(target, speechSegments)
       } else {
         await playSpeechSegments(target, speechSegments)
       }
